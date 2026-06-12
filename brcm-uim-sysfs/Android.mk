@@ -14,7 +14,6 @@ LOCAL_SRC_FILES:= \
     btsnoop.c \
     utils.c
 
-LOCAL_CLANG := false
 LOCAL_CFLAGS:= -c -W -Wall -O2 -D_POSIX_SOURCE -DUIM_DEBUG -DBLUEDROID_ENABLE_V4L2
 LOCAL_SHARED_LIBRARIES:= libnetutils libcutils liblog
 

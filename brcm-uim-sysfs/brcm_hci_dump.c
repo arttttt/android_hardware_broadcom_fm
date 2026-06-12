@@ -409,7 +409,7 @@ static void* v4l2_hci_snoop_thread(void* parameters)
     if (sock_fd < 0)
     {
         BRCM_HCI_DUMP_ERR("Unable to create netlink socket");
-        return -1;
+        return NULL;
     }
 
     memset(&src_addr, 0, sizeof(src_addr));
@@ -625,7 +625,7 @@ static void* v4l2_hci_snoop_thread(void* parameters)
 
 int hci_snoop_bkp_file()
 {
-    if (hci_snoop_path != NULL)
+    if (hci_snoop_path[0] != '\0')
     {
             char new_path[256] = {0};
 
