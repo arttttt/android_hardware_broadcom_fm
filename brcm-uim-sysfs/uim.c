@@ -858,7 +858,10 @@ validate_baudrate(int baud_rate, int *value)
 *****************************************************************************/
 static int proc_set_lpm_param()
 {
-    const char hci_writesleepmode_cmd[] = {0x01, 0x27, 0xFC, 0x0C, 0x00,0x00,0x001,\
+    /* Not const: the LPM parameters are written into this command below, so
+     * the array has to stay writable. As const, clang is free to place it in
+     * .rodata and the memcpy/memset then segfaults. */
+    char hci_writesleepmode_cmd[] = {0x01, 0x27, 0xFC, 0x0C, 0x00,0x00,0x001,\
                                           0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00};
     char cmd[100];
     UIM_DBG("lpmenable %d",lpmenable);
