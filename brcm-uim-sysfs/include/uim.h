@@ -153,8 +153,16 @@ typedef struct {
 #define V4L2_STATUS_ON  '1'  // Atleast one procol driver is registered
 #define V4L2_STATUS_OFF '0'  // No procol drivers registered
 
-/* File used for hardware config. Read udev_name, baudrate and module path from this file */
-#define VENDOR_LIB_CONF_FILE "/etc/bluetooth/bt_vendor.conf"
+/* File used for hardware config. Read udev_name, baudrate and module path from this file.
+ *
+ * This is a vendor config and lives in /vendor/etc since Android 8, next to
+ * the copy libbt reads. The old /etc/bluetooth/ location is pre-Treble; on a
+ * device that ships the file to vendor/etc, looking there finds nothing and
+ * uim then runs on without a firmware patch file name. Overridable so a board
+ * that still stages it under /etc can say so. */
+#ifndef VENDOR_LIB_CONF_FILE
+#define VENDOR_LIB_CONF_FILE "/vendor/etc/bluetooth/bt_vendor.conf"
+#endif
 
 
 /* HCI response opcodes */
