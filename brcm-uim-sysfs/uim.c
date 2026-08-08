@@ -857,6 +857,11 @@ validate_baudrate(int baud_rate, int *value)
 *****************************************************************************/
 static int proc_set_lpm_param()
 {
+    /* Must stay non-const: the LPM parameters are written into this command
+     * below. Declared const, clang is free to place it in .rodata and the
+     * memset then segfaults -- which is exactly what happened on 15.1, where
+     * this array still carried a const. Upstream dropped it here already; the
+     * note stays so it is not put back. */
     char hci_writesleepmode_cmd[] = {0x01, 0x27, 0xFC, 0x0C, 0x00, 0x00, 0x01,\
                                      0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, \
                                      0x00, 0x00};
