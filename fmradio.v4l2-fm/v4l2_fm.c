@@ -122,10 +122,17 @@ static int v4l2_rx_start_func (void **data, int low_freq, int high_freq, int def
    * pass it, so the device says which through ro.vendor.fm.deemphasis
    * (50 if unset). Set before tuning, so the first audio is right.
    */
-  if (set_deemphasis(session->fd,
-          property_get_int32("ro.vendor.fm.deemphasis", 50)) < 0) {
-      ALOGE("error on set de-emphasis\n");
-      return -1;
+  {
+      int deemph = property_get_int32("ro.vendor.fm.deemphasis", 50);
+
+      if (deemph != 50 && deemph != 75) {
+          ALOGW("ro.vendor.fm.deemphasis=%d is neither 50 nor 75, using 50\n", deemph);
+          deemph = 50;
+      }
+      /* Not fatal: a kernel without the control keeps its own default,
+       * and FM still plays. */
+      if (set_deemphasis(session->fd, deemph) < 0)
+          ALOGW("de-emphasis not set, the driver's default stays\n");
   }
 
   session->fact = get_fact(session->fd, &session->vt);
