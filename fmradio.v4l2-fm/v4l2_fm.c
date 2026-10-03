@@ -25,6 +25,7 @@
 #define ALOGE printf
 #else
 #include "utils/Log.h"
+#include <cutils/properties.h>
 #endif
 
 #include <stdio.h>
@@ -112,6 +113,18 @@ static int v4l2_rx_start_func (void **data, int low_freq, int high_freq, int def
   session->vt.index=0;
   if ( get_v4l2_tuner(session->fd,  &session->vt) <0 ){
       ALOGE("error on get V4L tuner\n");
+      return -1;
+  }
+
+  /*
+   * De-emphasis has to match the transmitters': 50 us in Europe, Russia and
+   * most of the world, 75 us in the Americas and Korea. The app does not
+   * pass it, so the device says which through ro.vendor.fm.deemphasis
+   * (50 if unset). Set before tuning, so the first audio is right.
+   */
+  if (set_deemphasis(session->fd,
+          property_get_int32("ro.vendor.fm.deemphasis", 50)) < 0) {
+      ALOGE("error on set de-emphasis\n");
       return -1;
   }
 

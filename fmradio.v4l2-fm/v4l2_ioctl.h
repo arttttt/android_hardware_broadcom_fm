@@ -33,6 +33,7 @@ int close_dev(int fd);
 int set_freq(int fd, int freq);
 int get_freq(int fd);
 int set_volume(int fd, int vol);
+int set_deemphasis(int fd, int usec);
 int get_signal_strength(int fd, struct v4l2_tuner *vt);
 int set_force_mono(int fd, struct v4l2_tuner *vt, int force_mono);
 int get_RDS_cap(int fd);

@@ -74,11 +74,32 @@ float get_fact(int fd, struct v4l2_tuner *vt){
     return -1;
 }
 
+/* Whether stereo is being received: rxsubchans, per the V4L2 spec.
+ * audmode is the mode asked for -- stereo whenever the signal allows --
+ * and says nothing about the station. */
 int get_stereo(int fd, struct v4l2_tuner *vt){
     if (get_v4l2_tuner(fd, vt)<0)
         return -1;
 
-    return ((vt->audmode & V4L2_TUNER_MODE_STEREO) ==1);
+    return (vt->rxsubchans & V4L2_TUNER_SUB_STEREO) != 0;
+}
+
+/* FM de-emphasis time constant, 50 or 75 us */
+int set_deemphasis(int fd, int usec){
+    int ret;
+    struct  v4l2_control vc;
+
+    vc.id = V4L2_CID_TUNE_DEEMPHASIS;
+    vc.value = (usec == 75) ? V4L2_DEEMPHASIS_75_uS : V4L2_DEEMPHASIS_50_uS;
+
+    ret = ioctl(fd, VIDIOC_S_CTRL, &vc);
+    if (ret < 0) {
+        ALOGE("ioctl V4L2_CID_TUNE_DEEMPHASIS\n");
+        return -1;
+    }
+
+    ALOGI("De-emphasis %d us\n", usec == 75 ? 75 : 50);
+    return 0;
 }
 
 int get_RDS_cap(int fd){
