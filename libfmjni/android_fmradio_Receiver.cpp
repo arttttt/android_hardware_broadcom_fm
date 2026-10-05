@@ -316,9 +316,10 @@ androidFmRadioRxIsRDSDataSupported(JNIEnv * __attribute__((unused)) env, jobject
     }
     // valid in all states
     if (fmReceiverSession.vendorMethods_p->is_rds_data_supported != NULL) {
+        /* a capability bit, or -1 on error */
         retval =
             fmReceiverSession.vendorMethods_p->
-            is_rds_data_supported(&fmReceiverSession.vendorData_p);
+            is_rds_data_supported(&fmReceiverSession.vendorData_p) > 0;
     } else {
         retval = false;
     }
@@ -733,102 +734,105 @@ jint setMute(JNIEnv *env, jobject thiz, jboolean mute)
     return ret?JNI_FALSE:JNI_TRUE;
 }
 
-jint isRdsSupport(JNIEnv * __attribute__((unused)) env, jobject __attribute__((unused)) thiz)
-{
 /*
-    int ret = 0;
+ * RDS for the app, which polls readRds() and, on the events it returns,
+ * reads the station name (getPs) or the radio text (getLrText). The vendor
+ * library puts PS and RT together; what was complete at the last readRds
+ * is kept here, under the session lock, for the getters.
+ */
 
-    ret = androidFmRadioRxIsRDSDataSupported(env, thiz);
-    if (!ret) {
-        ALOGE("%s, error, [ret=%d]\n", __func__, ret);
-    }
-    ALOGD("%s, [ret=%d]\n", __func__, ret);
-*/
-    return JNI_TRUE;//ret?JNI_TRUE:JNI_FALSE;
+/* FmService's RDS event bits */
+#define RDS_EVENT_PROGRAMNAME     0x0008
+#define RDS_EVENT_LAST_RADIOTEXT  0x0040
+
+static struct fmradio_rds_bundle_t rdsLatest;
+static bool rdsOn = true;
+
+jint isRdsSupport(JNIEnv *env, jobject thiz)
+{
+    /* the app wants 1 for yes; the driver gives a capability bit */
+    return androidFmRadioRxIsRDSDataSupported(env, thiz) ? 1 : 0;
 }
 
 jshort readRds(JNIEnv * __attribute__((unused)) env, jobject __attribute__((unused)) thiz)
 {
-/*
-    int ret = 0;
-    ALOGD("%s, [ret=%d]\n", __func__, ret);
-*/
-    return 0x0040; //Java: RDS_EVENT_LAST_RADIOTEXT
-}
+    struct fmradio_rds_bundle_t bundle;
+    int changed;
+    jshort events = 0;
 
-jint setRds(JNIEnv * __attribute__((unused)) env, jobject __attribute__((unused)) thiz, jboolean __attribute__((unused)) rdson)
-{
-/*
-    int ret = 0;
-    int onoff = -1;
-
-    ret = androidFmRadioRxSetRDS(env, thiz, rdson);
-    if (ret) {
-        ALOGE("%s, error, [ret=%d]\n", __func__, ret);
-    }
-    ALOGD("%s, [onoff=%d] [ret=%d]\n", __func__, onoff, ret);
-*/
-    return JNI_TRUE;
-}
-
-
-jbyteArray getLrText(JNIEnv * __attribute__((unused)) env, jobject __attribute__((unused)) thiz)
-{
-    int ret = 0;
-    int len = 0;
-    jbyteArray LastRadioText;
-    struct fmradio_rds_bundle_t fmradio_rds_bundle;
-    // ALOGD("%s, enter\n", __func__, ret);
-
-    memset(&fmradio_rds_bundle, 0, sizeof(fmradio_rds_bundle));
-
-    /*
-     * Under the lock, and only with a tuner to read: the app polls this from
-     * its own thread, which may still be at it while FM is being turned off.
-     * The read does not block (the device is open O_NONBLOCK).
-     */
     pthread_mutex_lock(fmReceiverSession.dataMutex_p);
-    if (!androidFmRadioIsValidEventForState(&fmReceiverSession,
-                                            FMRADIO_EVENT_GET_PARAMETER) ||
+    if (!rdsOn ||
+            !androidFmRadioIsValidEventForState(&fmReceiverSession,
+                                                FMRADIO_EVENT_GET_PARAMETER) ||
             fmReceiverSession.vendorMethods_p->get_rds == NULL) {
         pthread_mutex_unlock(fmReceiverSession.dataMutex_p);
-        return NULL;
+        return 0;
     }
-    ret = fmReceiverSession.vendorMethods_p->get_rds(&fmReceiverSession.vendorData_p, &fmradio_rds_bundle);//FMR_get_ps(g_idx, &ps, &ps_len);
+
+    changed = fmReceiverSession.vendorMethods_p->get_rds(
+            &fmReceiverSession.vendorData_p, &bundle);
+    if (changed >= 0) {
+        rdsLatest = bundle;
+        if (changed & FMRADIO_RDS_PS_CHANGED)
+            events |= RDS_EVENT_PROGRAMNAME;
+        if (changed & FMRADIO_RDS_RT_CHANGED)
+            events |= RDS_EVENT_LAST_RADIOTEXT;
+    }
     pthread_mutex_unlock(fmReceiverSession.dataMutex_p);
 
-    if (ret) {
-       // ALOGE("%s, error, [ret=%d]\n", __func__, ret);
-        return NULL;
-    }
-
-    len = strlen(fmradio_rds_bundle.psn);
-    LastRadioText = env->NewByteArray(len);
-    env->SetByteArrayRegion(LastRadioText, 0,  len, (const jbyte*)fmradio_rds_bundle.psn);
-
-
-  //  ALOGD("%s, exit: [ret=%d]\n", __func__, ret);
-    return LastRadioText;
+    return events;
 }
 
-jbyteArray getPs(JNIEnv * __attribute__((unused)) env, jobject __attribute__((unused)) thiz)
+/* Off, readRds reports nothing and reads nothing (the app turns it off
+ * with the screen) */
+jint setRds(JNIEnv * __attribute__((unused)) env, jobject __attribute__((unused)) thiz, jboolean rdson)
 {
-    int ret = 0;
-    jbyteArray PSName;
-    uint8_t *rt = NULL;
-    int rt_len = 0;
- //   ALOGD("%s, enter\n", __func__, ret);
-    ret = 1;//FMR_get_rt(g_idx, &rt, &rt_len);
-    if (ret) {
-        ALOGE("%s, error, [ret=%d]\n", __func__, ret);
-        return NULL;
-    }
-    PSName = env->NewByteArray(rt_len);
-    env->SetByteArrayRegion(PSName, 0, rt_len, (const jbyte*)rt);
- //   ALOGD("%s, [ret=%d]\n", __func__, ret);
-    return PSName;
+    pthread_mutex_lock(fmReceiverSession.dataMutex_p);
+    rdsOn = rdson;
+    pthread_mutex_unlock(fmReceiverSession.dataMutex_p);
+    return 0;
 }
 
+static jbyteArray rdsText(JNIEnv *env, const char *text, size_t max)
+{
+    char copy[RDS_RT_MAX_LENGTH + 1];
+    size_t len;
+    jbyteArray array;
+
+    pthread_mutex_lock(fmReceiverSession.dataMutex_p);
+    len = strnlen(text, max);
+    memcpy(copy, text, len);
+    pthread_mutex_unlock(fmReceiverSession.dataMutex_p);
+
+    if (len == 0)
+        return NULL;
+    array = env->NewByteArray(len);
+    if (array != NULL)
+        env->SetByteArrayRegion(array, 0, len, (const jbyte *) copy);
+    return array;
+}
+
+/* The radio text */
+jbyteArray getLrText(JNIEnv *env, jobject __attribute__((unused)) thiz)
+{
+    return rdsText(env, rdsLatest.rt, RDS_RT_MAX_LENGTH);
+}
+
+/* The station name */
+jbyteArray getPs(JNIEnv *env, jobject __attribute__((unused)) thiz)
+{
+    return rdsText(env, rdsLatest.psn, RDS_PSN_MAX_LENGTH);
+}
+
+/*
+ * The alternative frequency to switch to. The AF list is gathered, but no
+ * switching is done: readRds never reports an AF event, and this answers
+ * "none" (-1) if called anyway. Registered so a call cannot fail to link.
+ */
+jshort activeAf(JNIEnv * __attribute__((unused)) env, jobject __attribute__((unused)) thiz)
+{
+    return -1;
+}
 
 jshortArray autoScan(JNIEnv *env, jobject thiz)
 {
@@ -957,6 +961,7 @@ static JNINativeMethod gMethods[] = {
     {"readRds",   "()S", (void*)readRds },
     {"getPs",     "()[B", (void*)getPs  },
     {"getLrText", "()[B", (void*)getLrText},
+    {"activeAf",  "()S", (void*)activeAf},
     {"setMute",	"(Z)I", (void*)setMute},
     {"isRdsSupport",	"()I", (void*)isRdsSupport},
     {"switchAntenna", "(I)I", (void*)switchAntenna},

@@ -64,6 +64,12 @@ union fmradio_extra_data_t {
     char *string_value;
 };
 
+/* What get_rds says has changed since the last call: bits, or a negative
+ * error */
+#define FMRADIO_RDS_PS_CHANGED  0x01
+#define FMRADIO_RDS_RT_CHANGED  0x02
+#define FMRADIO_RDS_AF_CHANGED  0x04
+
 struct fmradio_rds_bundle_t {
     unsigned short pi;
     short tp;

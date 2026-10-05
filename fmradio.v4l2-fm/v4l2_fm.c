@@ -34,7 +34,6 @@
 #include <stdlib.h>
 #include <string.h>
 #include <pthread.h>
-#include <ctype.h>
 #include "../libfmjni/android_fm.h"
 #include "v4l2_ioctl.h"
 
@@ -43,12 +42,6 @@
 #define RDS_THREAD_OFF                   0
 #define BUFFER_RDS_SIZE                  300                // rds buff size
 #define GROUP_SIZE                       8                  // group is composed by 2byte * 4 packets
-#define GROUP_EMPTY                      0
-#define GROUP_INCOMPLETE                 1
-#define GROUP_0A                         0
-#define GROUP_0B                         1
-#define GETBYTE(blockNuber,byteNum)      blockNuber*2+byteNum
-#define CLEAN_RDS                        last_block_num= -1; next_expected_block= 0; group_status = GROUP_EMPTY;
 //Mute
 #define DEFAULT_VOLUME                  255
 #define MUTE_OFF                        0
@@ -59,6 +52,35 @@
 #define LOCKTIME                        40000           // wait 40ms for card to lock on
 #define MAX_FREQS                       50              // number of max freq buffer for a full scan
 #define DEFAULT_THRESHOLD               500             // threshold for scan
+
+/*
+ * RDS as it comes in: groups put together from the blocks the driver
+ * reads out (a group may straddle two reads), and the station name (PS)
+ * and radio text (RT) put together from the groups' segments. What is
+ * complete is published, and get_rds says what changed.
+ */
+typedef struct rds_state_t {
+  /* the group being put together: 4 blocks of 2 bytes */
+  unsigned char group[GROUP_SIZE];
+  int next_block;                     /* the block expected, 0..3 */
+
+  char ps[RDS_PSN_MAX_LENGTH];        /* being put together */
+  unsigned int ps_have;               /* segments received, a bit each */
+  char ps_out[RDS_PSN_MAX_LENGTH + 1];
+
+  char rt[RDS_RT_MAX_LENGTH];
+  unsigned int rt_have;
+  int rt_len;                         /* up to the 0x0D, or -1 until seen */
+  int rt_ab;                          /* the A/B flag: a change is new text */
+  char rt_out[RDS_RT_MAX_LENGTH + 1];
+
+  int af[RDS_MAX_AFS];
+  int num_afs;
+
+  unsigned short pi;
+  short pty, tp, ta, ms;
+  int changed;                        /* FMRADIO_RDS_*_CHANGED since read */
+} rds_state;
 
 /* session struct holded by the FM SE stack */
 typedef struct fm_v4l2_data_t {
@@ -73,7 +95,16 @@ typedef struct fm_v4l2_data_t {
   pthread_t thread_rds;                                 /* thread used to read rds data */
   volatile char scan_band_run;                          /* flag to stop the scan, set from another thread */
   char thread_rds_run;                                  /* flag to stop the rds thread*/
+  rds_state rds;
 } fm_v4l2_data;
+
+/* A new frequency: whatever RDS was gathered was another station's */
+static void rds_reset(fm_v4l2_data* session)
+{
+  memset(&session->rds, 0, sizeof(session->rds));
+  session->rds.rt_len = -1;
+  session->rds.rt_ab = -1;
+}
 
 
 fm_v4l2_data* get_session_data(void **data) {return *data;}
@@ -171,6 +202,7 @@ static int v4l2_rx_start_func (void **data, int low_freq, int high_freq, int def
   session->threshold = DEFAULT_THRESHOLD;
   /* a scan runs until stopped; see v4l2_scan */
   session->scan_band_run = SCAN_RUN;
+  rds_reset(session);
   
   if (set_freq(session->fd, session->freq) < 0 ){
       ALOGE("error on set freq\n");
@@ -261,6 +293,7 @@ int v4l2_set_frequency(void** session_data, int frequency){
   if (ret < 0)
       return -1;
 
+  rds_reset(session);
   return frequency;
 }
 
@@ -414,6 +447,7 @@ int v4l2_scan (void ** session_data, enum fmradio_seek_direction_t direction){
   }
 
   session->scan_band_run = SCAN_RUN;
+  rds_reset(session);
   ALOGI("End scan\n");
   return ret;
 }
@@ -593,114 +627,201 @@ int v4l2_is_tuned_to_valid_channel (void ** session_data){
     return 0;
 }
 
-int v4l2_get_rds(void * * session_data, struct fmradio_rds_bundle_t * fmradio_rds_bundle) {
-  int ret = 1;
-  int bytesNum, i, blocknum, last_block_num, next_expected_block, group_status, group_type;
-  char * buf, * group;
-  char b0, b1, b2, b1_l5;
+/* RDS text bytes as text: printable kept, anything else a space */
+static char rds_char(unsigned char c)
+{
+  return (c >= 0x20 && c != 0x7f) ? (char) c : ' ';
+}
 
-  int index;
-  fm_v4l2_data * session = get_session_data(session_data);
+/* AF codes 1..204 are 87.6..107.9 MHz, in kHz; anything else is not a
+ * frequency (fillers, counts, LF/MF) */
+static void rds_add_af(rds_state* rds, unsigned char code)
+{
+  int i, khz;
 
-  buf = malloc(sizeof(char) * BUFFER_RDS_SIZE);
-  group = malloc(sizeof(char) * GROUP_SIZE);
-  CLEAN_RDS
-
-  bytesNum = read(session -> fd, buf, BUFFER_RDS_SIZE);
-  if (bytesNum == -1 && errno == EINTR) {
-    ALOGE("Error on RDS read\n");
-    ret = 2;
+  if (code < 1 || code > 204)
+    return;
+  khz = 87500 + code * 100;
+  for (i = 0; i < rds->num_afs; i++)
+    if (rds->af[i] == khz)
+      return;
+  if (rds->num_afs < RDS_MAX_AFS) {
+    rds->af[rds->num_afs++] = khz;
+    rds->changed |= FMRADIO_RDS_AF_CHANGED;
   }
+}
 
+/* One whole group: blocks A..D, each [lsb, msb] */
+static void rds_group(rds_state* rds)
+{
+  unsigned char* g = rds->group;
+  int type = g[3] >> 4;                       /* block B msb: group type */
+  int version_b = (g[3] >> 3) & 1;
+  int seg, i;
 
-  if (bytesNum > 0) {
-    ALOGI("read num bytes %d\n", bytesNum); //assuming to have always multiple of 3
+  rds->pi = (g[1] << 8) | g[0];
+  rds->tp = (g[3] >> 2) & 1;
+  rds->pty = ((g[3] & 0x03) << 3) | (g[2] >> 5);
 
-    for (i = 0; i < bytesNum; i += 3) {
-      b0 = buf[i];
-      b1 = buf[i + 1];
-      b2 = buf[i + 2];
-
-      if ((b2 & 0x80) != 0) {
-        CLEAN_RDS
-        continue;
+  switch (type) {
+  case 0:                                     /* 0A/0B: PS, TA/MS, AF */
+    rds->ta = (g[2] >> 4) & 1;
+    rds->ms = (g[2] >> 3) & 1;
+    seg = g[2] & 0x03;
+    rds->ps[seg * 2] = rds_char(g[7]);
+    rds->ps[seg * 2 + 1] = rds_char(g[6]);
+    rds->ps_have |= 1u << seg;
+    if (rds->ps_have == 0x0f) {
+      if (memcmp(rds->ps, rds->ps_out, RDS_PSN_MAX_LENGTH) != 0) {
+        memcpy(rds->ps_out, rds->ps, RDS_PSN_MAX_LENGTH);
+        rds->ps_out[RDS_PSN_MAX_LENGTH] = '\0';
+        rds->changed |= FMRADIO_RDS_PS_CHANGED;
       }
+      rds->ps_have = 0;
+    }
+    if (!version_b) {
+      rds_add_af(rds, g[5]);
+      rds_add_af(rds, g[4]);
+    }
+    break;
 
-      blocknum = b2 & 0x07; // What's the differnce between "Received Offset"
+  case 2: {                                   /* 2A/2B: radio text */
+    int ab = (g[2] >> 4) & 1;
+    int per = version_b ? 2 : 4;              /* characters per segment */
+    unsigned char c[4];
+    int n;
 
-      if (blocknum == 4) blocknum = 2; // Treat C' as C
-      if ((blocknum == 5) || (blocknum == 6)) continue; // ignore E Blocks
-
-      if (blocknum == 7) { //invalid block
-        CLEAN_RDS
-        continue;
-      }
-
-      if (blocknum == last_block_num) continue;
-
-      if ((group_status == GROUP_EMPTY) && (blocknum != 0)) continue;
-
-      if (blocknum != next_expected_block) {
-        CLEAN_RDS
-        continue;
-      }
-
-      if (blocknum == 1) {
-        group_type = (b1 >> 3);
-      }
-
-      group[2 * blocknum] = b0;
-      group[2 * blocknum + 1] = b1;
-      group_status = GROUP_INCOMPLETE;
-
-      last_block_num = blocknum;
-      next_expected_block = blocknum + 1;
-
-      if (next_expected_block <= 3) continue;
-
-      // PI code in block 0:
-      fmradio_rds_bundle->pi = (group[GETBYTE(0, 1)] << 8) | group[GETBYTE(0, 0)];
-
-      //some other info common in all groups:
-      fmradio_rds_bundle->tp = group[GETBYTE(1, 1)] & 0x04;
-      fmradio_rds_bundle->pty = (((group[GETBYTE(1, 1)] << 3) & 0x18) | ((group[GETBYTE(1, 0)] >> 5) & 0x07));
-      // special
-      b1_l5 = (group[GETBYTE(1, 0)] & 0x1F);
-
-      switch (group_type) {
-      case GROUP_0A:
-      case GROUP_0B:
-
-        fmradio_rds_bundle->ta = (b1_l5 & 0x10);
-        fmradio_rds_bundle->ms = (b1_l5 & 0x08);
-
-        index = (b1_l5 & 0x03) << 1;
-
-        if (isprint(group[GETBYTE(3, 1)]) && isprint(group[GETBYTE(3, 0)])) {
-          fmradio_rds_bundle->psn[index] = group[GETBYTE(3, 1)];
-          fmradio_rds_bundle->psn[index + 1] = group[GETBYTE(3, 0)];
-        } else {
-          ret = 3;
-          break;
-        }
-
-        if (index == 6) {
-          fmradio_rds_bundle->psn[8] = '\0';
-          ALOGI("Event Rds called!\n");
-          ret = 4;
-        } else {
-          ret = 0;
-        }
+    if (ab != rds->rt_ab) {                   /* new text: start again */
+      rds->rt_ab = ab;
+      memset(rds->rt, ' ', sizeof(rds->rt));
+      rds->rt_have = 0;
+      rds->rt_len = -1;
+    }
+    seg = g[2] & 0x0f;
+    if (version_b) {
+      c[0] = g[7]; c[1] = g[6];
+    } else {
+      c[0] = g[5]; c[1] = g[4]; c[2] = g[7]; c[3] = g[6];
+    }
+    for (i = 0; i < per; i++) {
+      n = seg * per + i;
+      if (n >= RDS_RT_MAX_LENGTH)
+        break;
+      if (c[i] == 0x0d) {                     /* end of the text */
+        rds->rt_len = n;
         break;
       }
-      CLEAN_RDS
+      rds->rt[n] = rds_char(c[i]);
+    }
+    rds->rt_have |= 1u << seg;
+
+    /* complete: every segment up to the end, or all of them */
+    {
+      int len = rds->rt_len >= 0 ? rds->rt_len : 16 * per;
+      int segs = (len + per - 1) / per;
+      unsigned int need = segs >= 32 ? 0xffffffffu : ((1u << segs) - 1);
+
+      if (len > RDS_RT_MAX_LENGTH)
+        len = RDS_RT_MAX_LENGTH;
+      if ((rds->rt_have & need) == need) {
+        char text[RDS_RT_MAX_LENGTH + 1];
+
+        memcpy(text, rds->rt, len);
+        while (len > 0 && text[len - 1] == ' ')
+          len--;
+        text[len] = '\0';
+        if (len > 0 && strcmp(text, rds->rt_out) != 0) {
+          strcpy(rds->rt_out, text);
+          rds->changed |= FMRADIO_RDS_RT_CHANGED;
+        }
+      }
+    }
+    break;
+  }
+
+  default:
+    break;
+  }
+}
+
+/* One block from the driver: [lsb, msb, block number and flags] */
+static void rds_block(rds_state* rds, unsigned char lsb, unsigned char msb,
+                      unsigned char info)
+{
+  int block = info & 0x07;
+
+  /* uncorrectable, or not a block of the four */
+  if ((info & 0x80) || block == 7) {
+    rds->next_block = 0;
+    return;
+  }
+  if (block == 4)                             /* C' is C */
+    block = 2;
+  if (block > 3)                              /* E: not RDS */
+    return;
+
+  if (block != rds->next_block) {
+    /* a group starts again at A; anything else breaks it */
+    if (block != 0) {
+      rds->next_block = 0;
+      return;
     }
   }
 
-  free(buf);
-  free(group);
+  rds->group[block * 2] = lsb;
+  rds->group[block * 2 + 1] = msb;
+  rds->next_block = block + 1;
 
-  return ret;
+  if (rds->next_block == 4) {
+    rds_group(rds);
+    rds->next_block = 0;
+  }
+}
+
+/*
+ * Reads what the driver has (the device does not block) into the RDS
+ * state, fills the bundle with what is complete, and returns what changed
+ * since the last call, FMRADIO_RDS_*_CHANGED; 0 for nothing new, -1 on a
+ * read error.
+ */
+int v4l2_get_rds(void * * session_data, struct fmradio_rds_bundle_t * fmradio_rds_bundle) {
+  fm_v4l2_data * session = get_session_data(session_data);
+  rds_state* rds = &session->rds;
+  unsigned char buf[BUFFER_RDS_SIZE];
+  int bytesNum, i, changed;
+
+  for (;;) {
+    bytesNum = read(session->fd, buf, sizeof(buf) - sizeof(buf) % 3);
+    if (bytesNum < 0) {
+      if (errno == EINTR)
+        continue;
+      if (errno == EAGAIN || errno == EWOULDBLOCK)
+        break;
+      ALOGE("Error on RDS read: %s\n", strerror(errno));
+      return -1;
+    }
+    if (bytesNum == 0)
+      break;
+    for (i = 0; i + 2 < bytesNum; i += 3)
+      rds_block(rds, buf[i], buf[i + 1], buf[i + 2]);
+    if (bytesNum < (int) (sizeof(buf) - sizeof(buf) % 3))
+      break;
+  }
+
+  memset(fmradio_rds_bundle, 0, sizeof(*fmradio_rds_bundle));
+  fmradio_rds_bundle->pi = rds->pi;
+  fmradio_rds_bundle->tp = rds->tp;
+  fmradio_rds_bundle->pty = rds->pty;
+  fmradio_rds_bundle->ta = rds->ta;
+  fmradio_rds_bundle->ms = rds->ms;
+  fmradio_rds_bundle->num_afs = rds->num_afs;
+  memcpy(fmradio_rds_bundle->af, rds->af, sizeof(rds->af));
+  strcpy(fmradio_rds_bundle->psn, rds->ps_out);
+  strcpy(fmradio_rds_bundle->rt, rds->rt_out);
+
+  changed = rds->changed;
+  rds->changed = 0;
+  return changed;
 }
 
 int register_fmradio_functions(long *signature, struct fmradio_vendor_methods_t *vendor_methods)
