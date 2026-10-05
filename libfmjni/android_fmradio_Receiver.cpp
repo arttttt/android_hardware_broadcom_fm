@@ -188,7 +188,9 @@ static void androidFmRadioRxResume(JNIEnv * __attribute__((unused)) env, jobject
     (void)androidFmRadioResume(&fmReceiverSession);
 }
 
-static jboolean androidFmRadioRxReset(JNIEnv * __attribute__((unused)) env, jobject __attribute__((unused)) obj)
+/* The state reset from, or a negative error: an int, not a jboolean,
+ * which would take an error for a state */
+static int androidFmRadioRxReset(JNIEnv * __attribute__((unused)) env, jobject __attribute__((unused)) obj)
 {
     int retval = 0;
 
@@ -875,7 +877,8 @@ jboolean powerDown(JNIEnv * __attribute__((unused)) env, jobject __attribute__((
     ret = androidFmRadioRxReset(env, thiz);
 
     ALOGD("%s, [ret=%d]\n", __func__, ret);
-    return ret?JNI_TRUE:JNI_FALSE;
+    /* The state it was in, IDLE included (already off), or an error */
+    return ret >= 0 ? JNI_TRUE : JNI_FALSE;
 }
 
 static jboolean openDev(JNIEnv * __attribute__((unused)) env, jobject __attribute__((unused)) obj,

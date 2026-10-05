@@ -82,6 +82,29 @@ int get_proprietary_freq(int freq, int fact) {return freq * fact;}
 
 void* th_read_rds(void *thread_rds_info);
 
+/*
+ * Lets go of a session: the device closed, whatever state the tuner is in,
+ * and the memory freed. The kernel lets /dev/radio0 be opened once, so a
+ * session that keeps it would keep FM from ever starting again.
+ */
+static int release_session(void **data)
+{
+  fm_v4l2_data* session = get_session_data(data);
+  int ret = 0;
+
+  if (session == NULL)
+    return 0;
+
+  if (session->fd >= 0 && close(session->fd) < 0) {
+    ALOGE("error on close: %s\n", strerror(errno));
+    ret = -1;
+  }
+
+  free(session);
+  *data = NULL;
+  return ret;
+}
+
 static int v4l2_rx_start_func (void **data, int low_freq, int high_freq, int default_freq, int grid)
 {
   char	*dev = DEFAULT_DEVICE;
@@ -102,18 +125,18 @@ static int v4l2_rx_start_func (void **data, int low_freq, int high_freq, int def
   session->fd = open_dev(dev);
   if (session->fd < 0){
       ALOGE("error on open dev\n");
-      return -1;
+      goto fail;
   }
 
   if (get_tun_radio_cap(session->fd) !=1) {
       ALOGE("error on check tunner radio capability");
-      return -1;
+      goto fail;
   }
 
   session->vt.index=0;
   if ( get_v4l2_tuner(session->fd,  &session->vt) <0 ){
       ALOGE("error on get V4L tuner\n");
-      return -1;
+      goto fail;
   }
 
   /*
@@ -138,7 +161,7 @@ static int v4l2_rx_start_func (void **data, int low_freq, int high_freq, int def
   session->fact = get_fact(session->fd, &session->vt);
   if ( session->fact < 0) {
       ALOGE("error on get fact\n");
-      return -1;
+      goto fail;
   }
 
   session->freq = get_proprietary_freq(default_freq, session->fact);
@@ -149,40 +172,51 @@ static int v4l2_rx_start_func (void **data, int low_freq, int high_freq, int def
   
   if (set_freq(session->fd, session->freq) < 0 ){
       ALOGE("error on set freq\n");
-      return -1;
+      goto fail;
   }
 
   if (set_volume(session->fd, DEFAULT_VOLUME)<0){
       ALOGE("error on set volume\n");
-      return -1;
+      goto fail;
   }
 
   if (set_mute(session->fd, MUTE_OFF) <0){
       ALOGE("error on mute\n");
-      return -1;
+      goto fail;
   }
 
   return 0;
+
+fail:
+  /* A start that failed leaves nothing behind: no session, no device */
+  release_session(data);
+  return -1;
 }
 
+/*
+ * Muted first, so the radio goes quiet before it goes off, but the device
+ * is closed and the session freed either way: a reset that fails half way
+ * must not leave the device held.
+ */
 int v4l2_reset(void** session_data)
 {
   fm_v4l2_data* session;
-  int ret;
+  int ret = 0;
 
   ALOGI("%s:\n", __FUNCTION__);
   session = get_session_data(session_data);
+  if (session == NULL)
+    return 0;
 
-  ret = set_mute(session->fd, MUTE_ON);
-  if (ret < 0)
-    return -1;
+  if (set_mute(session->fd, MUTE_ON) < 0) {
+    ALOGE("error on mute before reset\n");
+    ret = -1;
+  }
 
-  ret = close(session->fd);
-  if (ret < 0)
-    return -1;
+  if (release_session(session_data) < 0)
+    ret = -1;
 
-  free(session);
-  return 0;
+  return ret;
 }
 
 int v4l2_pause(void** session_data){
@@ -341,11 +375,15 @@ int v4l2_full_scan (void ** session_data, int ** found_freqs, int ** signal_stre
 
   session->scan_band_run=SCAN_RUN;
 
+  *found_freqs = NULL;
+  *signal_strenghts = NULL;
+
   temp_freq = (int *) malloc(sizeof(int) *MAX_FREQS);
   temp_strenght = (int *) malloc(sizeof(int) *MAX_FREQS);
   if (temp_freq == NULL || temp_strenght==NULL){
     ALOGE("error on allocate");
-    return -1;
+    founded = -1;
+    goto out;
   }
 
   ALOGI("Starting full scanning...low freq:%d, high freq:%d\n", session->low_freq, session->high_freq);
@@ -353,13 +391,17 @@ int v4l2_full_scan (void ** session_data, int ** found_freqs, int ** signal_stre
   for (freqi =  session->low_freq, founded=0 ; ((freqi < session->high_freq)  && (founded < MAX_FREQS) && (session->scan_band_run==SCAN_RUN)) ; freqi += session->grid){
 
       ret = set_freq(session->fd, freqi);
-      if (ret<0)
-         return -1;
+      if (ret<0) {
+         founded = -1;
+         goto out;
+      }
 
       usleep(LOCKTIME);		/* let it lock on */
       rate= get_signal_strength(session->fd, &session->vt);
-      if (rate < 0)
-          return -1;
+      if (rate < 0) {
+          founded = -1;
+          goto out;
+      }
 
       ALOGI("final rate %d > %d \n", rate ,session->threshold);
 
@@ -371,11 +413,18 @@ int v4l2_full_scan (void ** session_data, int ** found_freqs, int ** signal_stre
       }
   }
 
-  *found_freqs = (int *) malloc(sizeof(int) * founded);
-  *signal_strenghts = (int *) malloc(sizeof(int) * founded);
+  /* One more than found, for a 0 after the last: the caller reads the
+   * frequencies up to it */
+  *found_freqs = (int *) malloc(sizeof(int) * (founded + 1));
+  *signal_strenghts = (int *) malloc(sizeof(int) * (founded + 1));
   if (*found_freqs == NULL || *signal_strenghts==NULL){
     ALOGE("error on allocate");
-    return -1;
+    free(*found_freqs);
+    free(*signal_strenghts);
+    *found_freqs = NULL;
+    *signal_strenghts = NULL;
+    founded = -1;
+    goto out;
   }
 
   //copy founded frequencies
@@ -384,13 +433,16 @@ int v4l2_full_scan (void ** session_data, int ** found_freqs, int ** signal_stre
       (*signal_strenghts)[i] = temp_strenght[i];
       ALOGI("Copied index %d, freq %d, signal %d\n",i, (*found_freqs)[i], (*signal_strenghts)[i] );
   }
-
+  (*found_freqs)[founded] = 0;
+  (*signal_strenghts)[founded] = 0;
   ALOGI("End full scan\n");
+
+out:
   free(temp_freq);
   free(temp_strenght);
   session->scan_band_run=SCAN_STOP;
 
-  return i;
+  return founded;
 }
 
 int v4l2_stop_scan(void ** session_data){
@@ -552,7 +604,7 @@ int v4l2_get_rds(void * * session_data, struct fmradio_rds_bundle_t * fmradio_rd
 
 int register_fmradio_functions(long *signature, struct fmradio_vendor_methods_t *vendor_methods)
 {
-    memset(vendor_methods, 0, sizeof(vendor_methods));
+    memset(vendor_methods, 0, sizeof(*vendor_methods));
 
     vendor_methods->set_frequency = v4l2_set_frequency;
     vendor_methods->get_frequency = v4l2_get_frequency;

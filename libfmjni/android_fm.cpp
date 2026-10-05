@@ -464,6 +464,7 @@ androidFmRadioUnLoadFmLibrary(struct FmSession_t * session_p)
 
     if (session_p->fmLibrary_p != NULL) {
         dlclose(session_p->fmLibrary_p);
+        session_p->fmLibrary_p = NULL;
         free(session_p->vendorMethods_p);
         session_p->vendorMethods_p = NULL;
     }
@@ -614,8 +615,9 @@ androidFmRadioStart(struct FmSession_t *session_p, enum RadioMode_t mode,
     // if we haven't registred the library yet do it
 
     if (!session_p->isRegistered) {
+        /* zeroed: a method the library does not set must read NULL */
         session_p->vendorMethods_p = (fmradio_vendor_methods_t *)
-                malloc(sizeof(*session_p->vendorMethods_p));
+                calloc(1, sizeof(*session_p->vendorMethods_p));
         if (session_p->vendorMethods_p == NULL) {
             ALOGE("malloc failed");
             retval = FMRADIO_IO_ERROR;
@@ -880,17 +882,20 @@ int androidFmRadioReset(struct FmSession_t *session_p)
             reset(&session_p->vendorData_p);
     pthread_mutex_lock(session_p->dataMutex_p);
 
-    // if successful unload vendor driver
+    /*
+     * The vendor library lets go of its session on reset whether or not the
+     * tuner took every step, so the library goes too: kept, the next start
+     * would run on a session that is gone. A failure is still reported.
+     */
     if (retval >= 0) {
         retval = oldState;
-        if (session_p->isRegistered) {
-            androidFmRadioUnLoadFmLibrary(session_p);
-            session_p->isRegistered = false;
-        }
     } else {
         ALOGE("androidFmRadioReset failed");
     }
-    // nothing on failure
+    if (session_p->isRegistered) {
+        androidFmRadioUnLoadFmLibrary(session_p);
+        session_p->isRegistered = false;
+    }
     drop_ongoing_reset:
     session_p->ongoingReset = false;
     drop_lock:
