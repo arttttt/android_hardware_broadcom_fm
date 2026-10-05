@@ -33,6 +33,7 @@
 #include <unistd.h>
 #include <dirent.h>
 #include <errno.h>
+#include <time.h>
 
 #include "jni.h"
 
@@ -811,9 +812,17 @@ int androidFmRadioMute(struct FmSession_t *session_p, int mute)
 
     pthread_mutex_lock(session_p->dataMutex_p);
 
+    /* Only with a tuner: before start or after reset there is none */
+    if (!androidFmRadioIsValidEventForState
+            (session_p, FMRADIO_EVENT_SET_PARAMETER) ||
+            session_p->vendorMethods_p->mute == NULL) {
+        retval = FMRADIO_INVALID_STATE;
+        goto drop_lock;
+    }
+
     retval = session_p->vendorMethods_p->mute(&session_p->vendorData_p, mute);
 
-//    drop_lock:
+    drop_lock:
     if (retval == FMRADIO_INVALID_STATE) {
         THROW_INVALID_STATE(session_p);
     } else if (retval < 0) {
@@ -827,7 +836,7 @@ int androidFmRadioMute(struct FmSession_t *session_p, int mute)
 int androidFmRadioReset(struct FmSession_t *session_p)
 {
     int retval = FMRADIO_OK;
-    int oldState = session_p->state;
+    int oldState;
 
     pthread_mutex_lock(session_p->dataMutex_p);
 
@@ -837,15 +846,36 @@ int androidFmRadioReset(struct FmSession_t *session_p)
         goto drop_lock;
     }
 
-    /* Worker threads must be cleaned up before sending reset */
-    if(session_p->state == FMRADIO_STATE_SCANNING){
+    /*
+     * A scan runs on the tuner without the lock: it is stopped, and the
+     * session left alone until the scan has let go of it, which the scan
+     * signals. Waited for by the state, not by one wake-up, and not for
+     * ever; a scan that will not end keeps the session, and the reset fails.
+     */
+    if (session_p->state == FMRADIO_STATE_SCANNING) {
+        struct timespec deadline;
+
         pthread_mutex_unlock(session_p->dataMutex_p);
         androidFmRadioStopScan(session_p);
         pthread_mutex_lock(session_p->dataMutex_p);
-        /* Waiting for worker thread to exit gracefully */
-        pthread_cond_wait(&session_p->sync_cond,
-                          session_p->dataMutex_p);
+
+        clock_gettime(CLOCK_REALTIME, &deadline);
+        deadline.tv_sec += 5;
+        while (session_p->state == FMRADIO_STATE_SCANNING) {
+            if (pthread_cond_timedwait(&session_p->sync_cond,
+                                       session_p->dataMutex_p,
+                                       &deadline) == ETIMEDOUT) {
+                break;
+            }
+        }
+        if (session_p->state == FMRADIO_STATE_SCANNING) {
+            ALOGE("androidFmRadioReset: the scan did not stop");
+            retval = FMRADIO_IO_ERROR;
+            goto drop_lock;
+        }
     }
+    oldState = session_p->state;
+
     /* idle or about to be reset, just return state */
     if (session_p->ongoingReset || oldState == FMRADIO_STATE_IDLE) {
         retval = oldState;

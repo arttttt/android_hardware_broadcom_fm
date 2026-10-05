@@ -358,10 +358,30 @@ androidFmRadioRxIsTunedToValidChannel(JNIEnv * __attribute__((unused)) env, jobj
     return retval;
 }
 
-static bool androidFmRadioRxScan(enum fmradio_seek_direction_t scanDirection, jint *frequency)
+/*
+ * Takes the session into SCANNING for a scan the state allows: STARTED or
+ * PAUSED, with the library loaded. Under the lock, so nothing can reset the
+ * session between the check and the scan's start.
+ */
+static bool androidFmRadioRxEnterScanning(enum FmRadioCommand_t event)
+{
+    bool ok;
+
+    pthread_mutex_lock(fmReceiverSession.dataMutex_p);
+    ok = androidFmRadioIsValidEventForState(&fmReceiverSession, event);
+    if (ok) {
+        FMRADIO_SET_STATE(&fmReceiverSession, FMRADIO_STATE_SCANNING);
+    }
+    pthread_mutex_unlock(fmReceiverSession.dataMutex_p);
+
+    return ok;
+}
+
+/* 0 with the frequency found, or -1 */
+static int androidFmRadioRxScan(enum fmradio_seek_direction_t scanDirection, jint *frequency)
 {
     int signalStrength = -1;
-    int retval;
+    int retval = -1;
 
     pthread_mutex_lock(fmReceiverSession.dataMutex_p);
     // we should still be in SCANNING mode, but we can't be 100.00 % sure since main thread released lock
@@ -422,26 +442,34 @@ static bool androidFmRadioRxScan(enum fmradio_seek_direction_t scanDirection, ji
         *frequency = retval;
     }
 
+    /* A reset waiting for the scan to end may go on */
+    if (pthread_cond_signal(&fmReceiverSession.sync_cond) != 0) {
+        ALOGE("execute_androidFmRadioRxScan - signal failed");
+    }
+
 drop_lock:
     pthread_mutex_unlock(fmReceiverSession.dataMutex_p);
 
-    return 0;
+    return retval >= 0 ? 0 : -1;
 }
 
-static bool
+static int
 androidFmRadioRxScanUp(JNIEnv * __attribute__((unused)) env, jobject __attribute__((unused)) obj, jint *frequency)
 {
   //  ALOGI("androidFmRadioRxScanUp\n");
-    FMRADIO_SET_STATE(&fmReceiverSession, FMRADIO_STATE_SCANNING);
-    androidFmRadioRxScan(FMRADIO_SEEK_UP, frequency);
-    return 0;
+    if (!androidFmRadioRxEnterScanning(FMRADIO_EVENT_SCAN)) {
+        return -1;
+    }
+    return androidFmRadioRxScan(FMRADIO_SEEK_UP, frequency);
 }
 
-static bool
+static int
 androidFmRadioRxScanDown(JNIEnv * __attribute__((unused)) env, jobject __attribute__((unused)) obj, jint *frequency)
 {
   //  ALOGI("androidFmRadioRxScanDown\n");
-    FMRADIO_SET_STATE(&fmReceiverSession, FMRADIO_STATE_SCANNING);
+    if (!androidFmRadioRxEnterScanning(FMRADIO_EVENT_SCAN)) {
+        return -1;
+    }
     return androidFmRadioRxScan(FMRADIO_SEEK_DOWN, frequency);
 }
 
@@ -522,7 +550,9 @@ static int androidFmRadioRxStartFullScan(JNIEnv * __attribute__((unused)) env, j
   //  ALOGI("androidFmRadioRxStartFullScan\n");
     int retval = 0;
 
-    FMRADIO_SET_STATE(&fmReceiverSession, FMRADIO_STATE_SCANNING);
+    if (!androidFmRadioRxEnterScanning(FMRADIO_EVENT_FULL_SCAN)) {
+        return -1;
+    }
     androidFmRadioRxFullScan(frequencies);
     return retval;
 }
@@ -674,10 +704,11 @@ jboolean powerUp(JNIEnv *env, jobject thiz, jfloat freq)
     int ret = 0;
     int tmp_freq;
 
+    /* Already on: up is resumed, and that is a success */
     if (androidFmRadioRxGetState(env, thiz) != FMRADIO_STATE_IDLE) {
-       androidFmRadioRxResume(env, thiz);
-       return false;
-   }
+        return androidFmRadioResume(&fmReceiverSession) >= 0 ?
+                JNI_TRUE : JNI_FALSE;
+    }
 
  //   ALOGI("%s, [freq=%d]\n", __func__, (int)freq);
     tmp_freq = (int)(freq * 1000);        //Eg, 87.5 * 10 --> 875
@@ -745,7 +776,22 @@ jbyteArray getLrText(JNIEnv * __attribute__((unused)) env, jobject __attribute__
     struct fmradio_rds_bundle_t fmradio_rds_bundle;
     // ALOGD("%s, enter\n", __func__, ret);
 
+    memset(&fmradio_rds_bundle, 0, sizeof(fmradio_rds_bundle));
+
+    /*
+     * Under the lock, and only with a tuner to read: the app polls this from
+     * its own thread, which may still be at it while FM is being turned off.
+     * The read does not block (the device is open O_NONBLOCK).
+     */
+    pthread_mutex_lock(fmReceiverSession.dataMutex_p);
+    if (!androidFmRadioIsValidEventForState(&fmReceiverSession,
+                                            FMRADIO_EVENT_GET_PARAMETER) ||
+            fmReceiverSession.vendorMethods_p->get_rds == NULL) {
+        pthread_mutex_unlock(fmReceiverSession.dataMutex_p);
+        return NULL;
+    }
     ret = fmReceiverSession.vendorMethods_p->get_rds(&fmReceiverSession.vendorData_p, &fmradio_rds_bundle);//FMR_get_ps(g_idx, &ps, &ps_len);
+    pthread_mutex_unlock(fmReceiverSession.dataMutex_p);
 
     if (ret) {
        // ALOGE("%s, error, [ret=%d]\n", __func__, ret);
@@ -846,6 +892,7 @@ jfloat seek(JNIEnv *env, jobject thiz, jfloat freq, jboolean isUp) //jboolean is
     float val;
 
     tmp_freq = (int)(freq * 1000);       //Eg, 87.55 * 100 --> 8755
+    ret_freq = tmp_freq;
 
     ret = setMute(env, thiz, 1);
     if (ret) {
