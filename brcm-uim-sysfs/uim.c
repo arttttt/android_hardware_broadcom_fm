@@ -87,11 +87,7 @@
 #define PERSIST_BDADDR_PROPERTY         "persist.service.bdroid.bdaddr"
 #define STACK_CONF_FILE "/etc/bluetooth/bt_stack.conf"
 #define FW_PATCH_FILENAME_MAXLEN 80
-#define fw_patchfile_path "/system/etc/firmware"
-#define FW_PATCHFILE_EXTENSION      ".hcd"
-#define FW_PATCHFILE_EXTENSION_LEN  4
 #define HCI_EVT_CMD_CMPL_LOCAL_NAME_STRING 7
-#define READ_LOCALNAME_RESP_BUFF_SIZE 100
 
 typedef char bdstr_t[18];
 
@@ -110,13 +106,10 @@ bdaddr_t bd_addr;
 /* parameters read from bt_vendor.conf */
 static char hw_cfg_string[CFG_PARAM_STRING_SIZE] = {0}; /* pass as parameter to ldisc */
 static unsigned long cust_baud_rate = 3000000;
-static char driver_module_path[MAX_KMODULE_PATH_SIZE] = "/system/lib/modules/";
 static char uart_port_name[UART_PORT_NAME_SIZE] = "/dev/ttyHS0";
 int lpmenable;
 int hci_snoop_enable = 0;
 char hci_snoop_path[HCI_SNOOP_PATH_LEN] = "/sdcard/btsnoop_hci.log";
-static char bt_dbg_cfg_string[CFG_PARAM_STRING_SIZE] = "";
-static char fm_dbg_cfg_string[CFG_PARAM_STRING_SIZE] = "";
 static char fw_patchfile_name[FW_PATCH_FILENAME_MAXLEN] = "";
 
 
@@ -306,26 +299,9 @@ int hw_set_uart_baudrate(char *p_conf_name, char *p_conf_value)
 
 /*******************************************************************************
  **
- ** Function        hw_set_driver_module_path
- **
- ** Description     set the location of .ko modules (driver modules) to insmod at startup.
- **
- ** Returns         0 : Success
- **                 Otherwise : Fail
- **
- *******************************************************************************/
-int hw_set_driver_module_path(char *p_conf_name, char *p_conf_value)
-{
-    strlcpy(driver_module_path, p_conf_value, sizeof(driver_module_path));
-    UIM_DBG("%s = %s", p_conf_name, p_conf_value);
-    return 0;
-}
-
-/*******************************************************************************
- **
  ** Function        hw_set_patchram_settlement_delay
  **
- ** Description     set the location of .ko modules (driver modules) to insmod at startup.
+ ** Description     pass the delay after the patchram download to the ldisc.
  **
  ** Returns         0 : Success
  **                 Otherwise : Fail
@@ -357,7 +333,6 @@ int hw_set_patchram_filename(char *p_conf_name, char *p_conf_value)
 }
 
 
-#if DBG_V4L2_DRIVERS
 /*******************************************************************************
  **
  ** Function        dbg_ldisc_drv
@@ -376,43 +351,6 @@ int dbg_ldisc_drv(char *p_conf_name, char *p_conf_value)
     return 0;
 }
 
-/*******************************************************************************
- **
- ** Function        dbg_bt_drv
- **
- ** Description     set to enable debugging in BT driver
- **
- ** Returns         0 : Success
- **                 Otherwise : Fail
- **
- *******************************************************************************/
-int dbg_bt_drv(char *p_conf_name, char *p_conf_value)
-{
-    strlcat(bt_dbg_cfg_string, " bt_dbg_param=", sizeof(bt_dbg_cfg_string));
-    strlcat(bt_dbg_cfg_string, p_conf_value, sizeof(bt_dbg_cfg_string));
-    UIM_DBG("%s = %s", p_conf_name, p_conf_value);
-    return 0;
-}
-
-/*******************************************************************************
- **
- ** Function        dbg_fm_drv
- **
- ** Description     set to enable debugging in FM driver
- **
- ** Returns         0 : Success
- **                 Otherwise : Fail
- **
- *******************************************************************************/
-int dbg_fm_drv(char *p_conf_name, char *p_conf_value)
-{
-    strlcat(fm_dbg_cfg_string, " fm_dbg_param=", sizeof(fm_dbg_cfg_string));
-    strlcat(fm_dbg_cfg_string, p_conf_value, sizeof(fm_dbg_cfg_string));
-    UIM_DBG("%s = %s", p_conf_name, p_conf_value);
-    return 0;
-}
-
-#endif
 
 
 #if V4L2_SNOOP_ENABLE
@@ -488,16 +426,11 @@ static const conf_entry_t vendor_conf_table[] = {
     {"UartBaudRate", hw_set_uart_baudrate},
     {"FwPatchSettlementDelay", hw_set_patchram_settlement_delay},
     {"LpmWakePolarity",hw_set_lpm_polarity},
-    {"DriverModulePath", hw_set_driver_module_path},
     {"LpmEnable", hw_set_lpm},
     {"LpmUseBluesleep", hw_set_btwake},
     {"UseControllerBdaddr",hw_check_readcontroller_addr},
     {"FwPatchFileName", hw_set_patchram_filename},
-#if DBG_V4L2_DRIVERS
-    {"DBG_BT_DRV",dbg_bt_drv},
     {"DBG_LDISC_DRV",dbg_ldisc_drv},
-    {"DBG_FM_DRV",dbg_fm_drv},
-#endif
     {(const char *) NULL, NULL}
 };
 
@@ -599,60 +532,6 @@ static inline void cleanup()
 
 
 
-#ifdef ANDROID   /* library for android to do insmod/rmmod  */
-
-/***************************************************************************
-* Function to insert the kernel module into the system
-****************************************************************************/
-__attribute__((unused)) static int insmod(const char *filename, const char *args)
-{
-    void *module;
-    unsigned int size;
-    int ret = -1;
-
-    UIM_START_FUNC();
-
-    module = (void *)load_file(filename, &size);
-    if (!module)
-    {
-        UIM_DBG("unable to access %s", filename);
-        return ret;
-    }
-
-    ret = init_module(module, size, args);
-    free(module);
-
-    UIM_DBG("%s err code = %d",__func__, ret);
-    return ret;
-}
-
-
-/*****************************************************************************
- * Function to remove the kernel module from the system
-*****************************************************************************/
-__attribute__((unused)) static int rmmod(const char *modname)
-{
-    int ret = -1;
-    int maxtry = MAX_TRY;
-
-    UIM_START_FUNC();
-
-    /* Retry MAX_TRY number of times in case of failure */
-    while (maxtry-- > 0) {
-        ret = delete_module(modname, O_NONBLOCK | O_EXCL);
-        if (ret < 0 && errno == EAGAIN)
-            sleep(1);
-        else
-            break;
-    }
-
-    /* Failed to remove the module */
-    if (ret != 0)
-        UIM_ERR("Unable to unload driver module \"%s\": %s",
-                modname, strerror(errno));
-    return ret;
-}
-#endif /* ANDROID */
 
 
 
@@ -959,190 +838,6 @@ static int proc_set_custom_baud_rate()
 }
 
 
-/*******************************************************************************
-**
-** Function         hw_strncmp
-**
-** Description      Used to compare two strings in caseless
-**
-** Returns          0: match, otherwise: not match
-**
-*******************************************************************************/
-static int hw_strncmp (const char *p_str1, const char *p_str2, const int len)
-{
-    int i;
-
-    if (!p_str1 || !p_str2)
-        return (1);
-
-    for (i = 0; i < len; i++)
-    {
-        if (toupper(p_str1[i]) != toupper(p_str2[i]))
-            return (i+1);
-    }
-
-    return 0;
-}
-
-
-/*******************************************************************************
-**
-** Function         hw_config_findpatch
-**
-** Description      Search for a proper firmware patch file
-**                  The selected firmware patch file name with full path
-**                  will be stored in the input string parameter, i.e.
-**                  p_chip_id_str, when returns.
-**
-** Returns          TRUE when found the target patch file, otherwise FALSE
-**
-*******************************************************************************/
-static uint8_t hw_config_findpatch(char *p_chip_id_str)
-{
-    DIR *dirp;
-    struct dirent *dp;
-    int filenamelen;
-    uint8_t retval = FALSE;
-
-    if ((dirp = opendir(fw_patchfile_path)) != NULL)
-    {
-        UIM_DBG("Target name = [%s]", p_chip_id_str);
-        /* Fetch next filename in patchfile directory */
-        while ((dp = readdir(dirp)) != NULL)
-        {
-            /* Check if filename starts with chip-id name */
-            if ((hw_strncmp(dp->d_name, p_chip_id_str, strlen(p_chip_id_str)) \
-                ) == 0)
-            {
-                /* Check if it has .hcd extenstion */
-                filenamelen = strlen(dp->d_name);
-                if ((filenamelen >= FW_PATCHFILE_EXTENSION_LEN) &&
-                    ((hw_strncmp(
-                          &dp->d_name[filenamelen-FW_PATCHFILE_EXTENSION_LEN], \
-                          FW_PATCHFILE_EXTENSION, \
-                          FW_PATCHFILE_EXTENSION_LEN) \
-                     ) == 0))
-                {
-                    UIM_DBG("Found patchfile: %s", dp->d_name);
-                    /* Make sure length does not exceed maximum */
-                    if (filenamelen >= FW_PATCH_FILENAME_MAXLEN)
-                    {
-                        UIM_ERR("Invalid patchfile name (too long) %s",
-                            dp->d_name);
-                        UIM_ERR("Max patchfile name length supported = %d",
-                            FW_PATCH_FILENAME_MAXLEN-1);
-                        break;
-                    }
-
-                    strcpy(p_chip_id_str, dp->d_name);
-                    retval = TRUE;
-                    break;
-                }
-            }
-        }
-
-        closedir(dirp);
-
-        if (retval == FALSE)
-        {
-            /* Try again chip name without revision info */
-            UIM_DBG("retval is FALSE");
-
-            int len = strlen(p_chip_id_str);
-            char *p = p_chip_id_str + len - 1;
-
-            /* Scan backward and look for the first alphabet
-               which is not M or m
-            */
-            while (len > 3) // BCM****
-            {
-                if ((isdigit(*p)==0) && (*p != 'M') && (*p != 'm'))
-                    break;
-
-                p--;
-                len--;
-            }
-
-            if (len > 3)
-            {
-                *p = 0;
-                retval = hw_config_findpatch(p_chip_id_str);
-            }
-        }
-    }
-    else
-    {
-        UIM_ERR("Could not open %s", fw_patchfile_path);
-    }
-
-    return (retval);
-}
-
-
-/*******************************************************************************
-**
-** Function         proc_read_local_name
-**
-** Description      Read local name of the chip. Find the correct patchram filename.
-**                       Patchram filename is written to same input argument.
-**
-** Returns          0: match, otherwise: not match
-**
-*******************************************************************************/
-
-static uint8_t proc_read_local_name(char* p_chip_id_str)
-{
-    char hci_read_localname[] = { 0x01, 0x14, 0x0C, 0x00 };
-    char buff[READ_LOCALNAME_RESP_BUFF_SIZE];
-    char *p_name, *p_tmp;
-    int len, i;
-
-    memset(buff, 0, sizeof(buff));
-
-    len = write(dev_fd, hci_read_localname, 4);
-    if (len < 0) {
-        UIM_ERR(" request hci_read_localname failed");
-        return FALSE;
-    }
-
-    if(read_hci_event(dev_fd, buff, FW_PATCH_FILENAME_MAXLEN) < 0) {
-        UIM_ERR(" Invalid response for hci_read_localname");
-        return FALSE;
-    }
-
-    p_name = p_tmp = buff + HCI_EVT_CMD_CMPL_LOCAL_NAME_STRING;
-    UIM_DBG("readlocalname = %s", p_name);
-
-    /* convert localname to upper case */
-    for (i=0; (i < FW_PATCH_FILENAME_MAXLEN)||(*(p_name+i) != 0); i++)
-        *(p_name+i) = toupper(*(p_name+i));
-
-    /* Perform various checks on chip localname*/
-    if ((p_name = strstr(p_name, "BCM")) != NULL)
-    {
-        strncpy(p_chip_id_str, p_name, \
-                         FW_PATCH_FILENAME_MAXLEN-1);
-                }
-    else if((p_name = strstr(p_tmp,"4343")) != NULL)
-    {
-        snprintf(p_chip_id_str, FW_PATCH_FILENAME_MAXLEN-1, "BCM%s", p_name);
-        strncpy(p_name, p_chip_id_str, FW_PATCH_FILENAME_MAXLEN-1);
-    }
-    else
-    {
-        strncpy(p_chip_id_str, "UNKNOWN", \
-                    FW_PATCH_FILENAME_MAXLEN-1);
-        return FALSE;
-    }
-
-    p_chip_id_str[FW_PATCH_FILENAME_MAXLEN-1] = 0;
-
-    UIM_VER("Chipset %s", p_chip_id_str);
-
-    return hw_config_findpatch(p_chip_id_str);
-}
-
-
 /*****************************************************************************
 * Function to initialize UART
 *****************************************************************************/
@@ -1184,7 +879,6 @@ void proc_init_uart(int uart_fd, struct termios *termios)
 int st_uart_config(unsigned char install)
 {
     int ldisc, proto;
-    char local_chip_name[FW_PATCH_FILENAME_MAXLEN];
     int fw_fd;
 
     UIM_START_FUNC();
@@ -1226,18 +920,14 @@ int st_uart_config(unsigned char install)
             return UIM_FAIL;
         }
 
-        /* find patchram filename */
-        if (strlen(fw_patchfile_name)> 0) {
-            UIM_DBG("complete fw file name = %s", fw_patchfile_name);
+        /* The kernel downloads the patchram; it needs the file's name,
+         * which bt_vendor.conf gives (FwPatchFileName) */
+        if (strlen(fw_patchfile_name) == 0) {
+            UIM_ERR(" no FwPatchFileName in %s", VENDOR_LIB_CONF_FILE);
+            cleanup();
+            return UIM_FAIL;
         }
-        else if(proc_read_local_name(local_chip_name) == TRUE) {
-            UIM_DBG("complete fw file name = %s", local_chip_name);
-            strlcpy(fw_patchfile_name, local_chip_name, sizeof(fw_patchfile_name));
-        }
-        else {
-            UIM_ERR(" Can't get FW patchfile name");
-            strlcpy(fw_patchfile_name, "UNKNOWN", sizeof(fw_patchfile_name));
-        }
+        UIM_DBG("complete fw file name = %s", fw_patchfile_name);
 
         UIM_VER("fw_patchfile_name = %s", fw_patchfile_name);
         /* write patchram filename to sysfs entry and pass to ldisc */
@@ -1494,10 +1184,11 @@ int main(void)
     }
 
 #if V4L2_SNOOP_ENABLE
-    /* Read configuration parameters for hci snoop */
+    /* HCI snoop's settings, if any: without the file there is no snoop,
+     * not a failure */
     if (vnd_load_conf(STACK_CONF_FILE, &stack_conf_table[0]))
     {
-        return UIM_FAIL;
+        UIM_DBG("no %s, HCI snoop off", STACK_CONF_FILE);
     }
 #endif
 

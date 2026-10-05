@@ -40,9 +40,5 @@
 #define UIM_DEBUG FALSE
 #endif
 
-/* Set this to false for production release */
-#ifndef DBG_V4L2_DRIVERS
-#define DBG_V4L2_DRIVERS TRUE
-#endif
 
 

@@ -70,25 +70,12 @@ enum {
 ******************************************************************************/
 
 static int rfkill_id = -1;
-static int bt_emul_enable = 0;
 static char *rfkill_state_path = NULL;
 
 
 /*****************************************************************************
 **   Bluetooth On/Off Static Functions
 *****************************************************************************/
-static int is_emulator_context(void)
-{
-    char value[PROPERTY_VALUE_MAX];
-
-    property_get("ro.kernel.qemu", value, "0");
-    UPIODBG("is_emulator_context : %s", value);
-    if (strcmp(value, "1") == 0) {
-        return 1;
-    }
-    return 0;
-}
-
 static int is_rfkill_disabled(void)
 {
     char value[PROPERTY_VALUE_MAX];
@@ -169,18 +156,6 @@ int upio_set_bluetooth_power(int on)
     }
 
     UPIODBG("upio_set_bluetooth_power(on: %d)", on);
-
-    if (is_emulator_context())
-    {
-        /* if new value is same as current, return -1 */
-        if (bt_emul_enable == on)
-            return ret;
-
-        UPIODBG("set_bluetooth_power [emul] %d", on);
-
-        bt_emul_enable = on;
-        return 0;
-    }
 
     /* check if we have rfkill interface */
     if (is_rfkill_disabled())

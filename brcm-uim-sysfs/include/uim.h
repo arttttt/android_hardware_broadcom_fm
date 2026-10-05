@@ -38,7 +38,6 @@
 #define HCI_HDR_OPCODE          0xff36
 #define WRITE_BD_ADDR_OPCODE    0xFC06
 #define RESP_PREFIX             0x04
-#define MAX_TRY                 10
 
 /* HCI Packet types */
 #define HCI_COMMAND_PKT         0x01
@@ -171,7 +170,6 @@ typedef struct {
 #define HCI_RSP_OPCODE_SET_BAUDRATE   0xfc18
 #define HCI_RSP_OPCODE_HCI_UART_CLOCK_SET        0xfc45
 
-#define MAX_KMODULE_PATH_SIZE 100
 #define UART_PORT_NAME_SIZE 20
 
 #ifdef BOARD_BRCM_HCI_NUM
@@ -181,8 +179,6 @@ typedef struct {
 #endif
 
 /* Functions to insert and remove the kernel modules from the system*/
-extern int init_module(void *, unsigned int, const char *);
-extern int delete_module(const char *, unsigned int);
 
 /* Function declarations */
 void proc_init_uart(int uart_fd, struct termios *termios);
