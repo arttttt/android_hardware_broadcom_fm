@@ -141,13 +141,16 @@ int pass_vendor_params()
     int fd_vendor_params = 0;
 
     fd_vendor_params = open(LDISC_VENDOR_PARAMS, O_WRONLY);
-    if (fd_vendor_params > 0)
+    if (fd_vendor_params >= 0)
     {
-        if(write(fd_vendor_params, hw_cfg_string, CFG_PARAM_STRING_SIZE) < 0)
-            return UIM_FAIL;
+        int ret = 0;
 
-        UIM_DBG("vendor params passed to ldisc");
-        return 0;
+        if(write(fd_vendor_params, hw_cfg_string, CFG_PARAM_STRING_SIZE) < 0)
+            ret = UIM_FAIL;
+        else
+            UIM_DBG("vendor params passed to ldisc");
+        close(fd_vendor_params);
+        return ret;
     }
     else
         return UIM_FAIL;
@@ -165,7 +168,7 @@ int pass_vendor_params()
 *******************************************************************************/
 int userial_set_port(char *p_conf_name, char *p_conf_value)
 {
-    strcpy(uart_port_name, p_conf_value);
+    strlcpy(uart_port_name, p_conf_value, sizeof(uart_port_name));
     UIM_DBG("%s = %s", p_conf_name, p_conf_value);
     return 0;
 }
@@ -217,7 +220,7 @@ int hw_set_btwake(char *p_conf_name, char *p_conf_value)
 {
     char bluesleep_enable[10];
     int bluesleepenable;
-    strcat(hw_cfg_string, " LpmUseBluesleep=");
+    strlcat(hw_cfg_string, " LpmUseBluesleep=", sizeof(hw_cfg_string));
     if (strcmp(p_conf_value, "true") == 0){
         bluesleepenable =1;
         sprintf(bluesleep_enable,"%d",bluesleepenable);
@@ -226,7 +229,7 @@ int hw_set_btwake(char *p_conf_name, char *p_conf_value)
         bluesleepenable =0;
         sprintf(bluesleep_enable,"%d",bluesleepenable);
     }
-    strcat(hw_cfg_string, bluesleep_enable);
+    strlcat(hw_cfg_string, bluesleep_enable, sizeof(hw_cfg_string));
     UIM_DBG("%s = %s", p_conf_name, p_conf_value);
     return 0;
 }
@@ -245,7 +248,7 @@ int hw_check_readcontroller_addr(char *p_conf_name, char *p_conf_value)
 {
     char controller_addrread[10];
     int controlleraddrread;
-    strcat(hw_cfg_string, " ControllerAddrRead=");
+    strlcat(hw_cfg_string, " ControllerAddrRead=", sizeof(hw_cfg_string));
     if (strcmp(p_conf_value, "true") == 0){
         controlleraddrread =1;
         sprintf(controller_addrread,"%d",controlleraddrread);
@@ -254,7 +257,7 @@ int hw_check_readcontroller_addr(char *p_conf_name, char *p_conf_value)
         controlleraddrread =0;
         sprintf(controller_addrread,"%d",controlleraddrread);
     }
-    strcat(hw_cfg_string, controller_addrread);
+    strlcat(hw_cfg_string, controller_addrread, sizeof(hw_cfg_string));
     UIM_DBG("%s = %s", p_conf_name, p_conf_value);
     return 0;
 }
@@ -293,8 +296,8 @@ int hw_set_lpm(char *p_conf_name, char *p_conf_value)
  *******************************************************************************/
 int hw_set_uart_baudrate(char *p_conf_name, char *p_conf_value)
 {
-    strcat(hw_cfg_string, " custom_baudrate=");
-    strcat(hw_cfg_string, p_conf_value);
+    strlcat(hw_cfg_string, " custom_baudrate=", sizeof(hw_cfg_string));
+    strlcat(hw_cfg_string, p_conf_value, sizeof(hw_cfg_string));
     sscanf(p_conf_value, "%lu", &cust_baud_rate);
     UIM_DBG("%s = %s", p_conf_name, p_conf_value);
     return 0;
@@ -313,7 +316,7 @@ int hw_set_uart_baudrate(char *p_conf_name, char *p_conf_value)
  *******************************************************************************/
 int hw_set_driver_module_path(char *p_conf_name, char *p_conf_value)
 {
-    strcpy(driver_module_path, p_conf_value);
+    strlcpy(driver_module_path, p_conf_value, sizeof(driver_module_path));
     UIM_DBG("%s = %s", p_conf_name, p_conf_value);
     return 0;
 }
@@ -330,8 +333,8 @@ int hw_set_driver_module_path(char *p_conf_name, char *p_conf_value)
  *******************************************************************************/
 int hw_set_patchram_settlement_delay(char *p_conf_name, char *p_conf_value)
 {
-    strcat(hw_cfg_string, " patchram_settlement_delay=");
-    strcat(hw_cfg_string, p_conf_value);
+    strlcat(hw_cfg_string, " patchram_settlement_delay=", sizeof(hw_cfg_string));
+    strlcat(hw_cfg_string, p_conf_value, sizeof(hw_cfg_string));
     UIM_DBG("%s = %s", p_conf_name, p_conf_value);
     return 0;
 }
@@ -348,7 +351,7 @@ int hw_set_patchram_settlement_delay(char *p_conf_name, char *p_conf_value)
  *******************************************************************************/
 int hw_set_patchram_filename(char *p_conf_name, char *p_conf_value)
 {
-    strcpy(fw_patchfile_name, p_conf_value);
+    strlcpy(fw_patchfile_name, p_conf_value, sizeof(fw_patchfile_name));
     UIM_DBG("%s = %s", p_conf_name, p_conf_value);
     return 0;
 }
@@ -367,8 +370,8 @@ int hw_set_patchram_filename(char *p_conf_name, char *p_conf_value)
  *******************************************************************************/
 int dbg_ldisc_drv(char *p_conf_name, char *p_conf_value)
 {
-    strcat(hw_cfg_string, " ldisc_dbg_param=");
-    strcat(hw_cfg_string, p_conf_value);
+    strlcat(hw_cfg_string, " ldisc_dbg_param=", sizeof(hw_cfg_string));
+    strlcat(hw_cfg_string, p_conf_value, sizeof(hw_cfg_string));
     UIM_DBG("%s = %s", p_conf_name, p_conf_value);
     return 0;
 }
@@ -385,8 +388,8 @@ int dbg_ldisc_drv(char *p_conf_name, char *p_conf_value)
  *******************************************************************************/
 int dbg_bt_drv(char *p_conf_name, char *p_conf_value)
 {
-    strcat(bt_dbg_cfg_string, " bt_dbg_param=");
-    strcat(bt_dbg_cfg_string, p_conf_value);
+    strlcat(bt_dbg_cfg_string, " bt_dbg_param=", sizeof(bt_dbg_cfg_string));
+    strlcat(bt_dbg_cfg_string, p_conf_value, sizeof(bt_dbg_cfg_string));
     UIM_DBG("%s = %s", p_conf_name, p_conf_value);
     return 0;
 }
@@ -403,8 +406,8 @@ int dbg_bt_drv(char *p_conf_name, char *p_conf_value)
  *******************************************************************************/
 int dbg_fm_drv(char *p_conf_name, char *p_conf_value)
 {
-    strcat(fm_dbg_cfg_string, " fm_dbg_param=");
-    strcat(fm_dbg_cfg_string, p_conf_value);
+    strlcat(fm_dbg_cfg_string, " fm_dbg_param=", sizeof(fm_dbg_cfg_string));
+    strlcat(fm_dbg_cfg_string, p_conf_value, sizeof(fm_dbg_cfg_string));
     UIM_DBG("%s = %s", p_conf_name, p_conf_value);
     return 0;
 }
@@ -428,12 +431,12 @@ int enable_hci_snoop(char *p_conf_name, char *p_conf_value)
     if (strcmp(p_conf_value, "true") == 0)
     {
         hci_snoop_enable = 1;
-        strcat(hw_cfg_string, " ldisc_snoop_enable_param=1");
+        strlcat(hw_cfg_string, " ldisc_snoop_enable_param=1", sizeof(hw_cfg_string));
     }
     else
     {
         hci_snoop_enable = 0;
-        strcat(hw_cfg_string, " ldisc_snoop_enable_param=0");
+        strlcat(hw_cfg_string, " ldisc_snoop_enable_param=0", sizeof(hw_cfg_string));
     }
     UIM_DBG("%s = %s", p_conf_name, p_conf_value);
     return 0;
@@ -453,7 +456,7 @@ int enable_hci_snoop(char *p_conf_name, char *p_conf_value)
 int path_hci_snoop(char *p_conf_name, char *p_conf_value)
 {
     memset(hci_snoop_path, 0, sizeof(hci_snoop_path));
-    strcpy(hci_snoop_path, p_conf_value);
+    strlcpy(hci_snoop_path, p_conf_value, sizeof(hci_snoop_path));
     UIM_DBG("%s = %s", p_conf_name, p_conf_value);
     return 0;
 }
@@ -594,17 +597,6 @@ static inline void cleanup()
     UIM_DBG("%s complete", __func__);
 }
 
-static inline void err_cleanup(int st_fd)
-{
-    cleanup();
-    UIM_ERR("setting upio power to 0 for error recovery");
-    upio_set_bluetooth_power(0);
-    UIM_ERR("Closing shared transport fd - st_fd");
-    if (st_fd)
-        close(st_fd);
-    st_fd = -1;
-    UIM_ERR("Restarting UIM due to error!");
-}
 
 
 #ifdef ANDROID   /* library for android to do insmod/rmmod  */
@@ -670,13 +662,49 @@ __attribute__((unused)) static int rmmod(const char *modname)
  * This will parse the response received and returns error
  * if the required response is not received
  ****************************************************************************/
+/*
+ * A read from the UART that gives up after HCI_READ_TIMEOUT_MS without
+ * data. The UART is blocking until the speed is changed, and a chip that
+ * does not answer (unpowered, or wedged) would otherwise hold UIM in read()
+ * for good: the kernel gives up on the install after LDISC_TIME (1.5 s) and
+ * retries it, which UIM can only follow if it gets back to polling.
+ */
+#define HCI_READ_TIMEOUT_MS 500
+
+static int read_timeout(int fd, char *buf, int len)
+{
+    struct pollfd pfd;
+    int ret;
+
+    pfd.fd = fd;
+    pfd.events = POLLIN;
+    pfd.revents = 0;
+
+    do {
+        ret = poll(&pfd, 1, HCI_READ_TIMEOUT_MS);
+    } while (ret < 0 && errno == EINTR);
+
+    if (ret == 0) {
+        UIM_ERR(" no answer from the chip in %d ms", HCI_READ_TIMEOUT_MS);
+        return -1;
+    }
+    if (ret < 0) {
+        UIM_ERR(" poll failed: %s", strerror(errno));
+        return -1;
+    }
+
+    do {
+        ret = read(fd, buf, len);
+    } while (ret < 0 && errno == EINTR);
+
+    return ret;
+}
+
 int read_hci_event(int fd, char *buf, int size)
 {
     int remain, rd;
     int count = 0;
-    int reading = 1;
-    int rd_retry_count = 0;
-    struct timespec tm = {0, 50*1000*1000};
+    int skipped = 0;
 
     UIM_START_FUNC();
 
@@ -686,24 +714,22 @@ int read_hci_event(int fd, char *buf, int size)
 
     /* The first byte identifies the packet type. For HCI event packets, it
      * should be 0x04, so we read until we get to the 0x04. */
-    while (reading) {
-        rd = read(fd, buf, 1);
-        if (rd <= 0 && rd_retry_count++ < 4) {
-            nanosleep(&tm, NULL);
-            continue;
-        } else if (rd_retry_count >= 4) {
+    for (;;) {
+        rd = read_timeout(fd, buf, 1);
+        if (rd <= 0)
             return -1;
-        }
-
-        if (buf[0] == RESP_PREFIX) {
+        if (buf[0] == RESP_PREFIX)
             break;
+        if (++skipped > 256) {
+            UIM_ERR(" no HCI event in %d bytes", skipped);
+            return -1;
         }
     }
     count++;
 
     /* The next two bytes are the event code and parameter total length. */
     while (count < 3) {
-        rd = read(fd, buf + count, 3 - count);
+        rd = read_timeout(fd, buf + count, 3 - count);
         if (rd <= 0)
             return -1;
         count += rd;
@@ -716,7 +742,7 @@ int read_hci_event(int fd, char *buf, int size)
         remain = size - 3;
 
     while ((count - 3) < remain) {
-        rd = read(fd, buf + count, remain - (count - 3));
+        rd = read_timeout(fd, buf + count, remain - (count - 3));
         if (rd <= 0)
             return -1;
         count += rd;
@@ -868,7 +894,7 @@ static int proc_set_lpm_param()
     char cmd[100];
     UIM_DBG("lpmenable %d",lpmenable);
     char *temp = hci_writesleepmode_cmd;
-    strcat(hw_cfg_string, " lpm_param=");
+    strlcat(hw_cfg_string, " lpm_param=", sizeof(hw_cfg_string));
     if(lpmenable) {
         memcpy((temp+4), &lpm_uim_param, LPM_CMD_PARAM_SIZE);
         UIM_DBG("%s lpm is enabled", __func__);
@@ -880,7 +906,7 @@ static int proc_set_lpm_param()
               temp[0], temp[1], temp[2],temp[3], temp[4], temp[5],
               temp[6], temp[7], temp[8],temp[9], temp[10], temp[11],
               temp[12], temp[13], temp[14], temp[15]);
-    strcat(hw_cfg_string , cmd);
+    strlcat(hw_cfg_string, cmd, sizeof(hw_cfg_string));
     return 0;
 }
 
@@ -1206,11 +1232,11 @@ int st_uart_config(unsigned char install)
         }
         else if(proc_read_local_name(local_chip_name) == TRUE) {
             UIM_DBG("complete fw file name = %s", local_chip_name);
-            strcpy(fw_patchfile_name, local_chip_name);
+            strlcpy(fw_patchfile_name, local_chip_name, sizeof(fw_patchfile_name));
         }
         else {
             UIM_ERR(" Can't get FW patchfile name");
-            strcpy(fw_patchfile_name, "UNKNOWN");
+            strlcpy(fw_patchfile_name, "UNKNOWN", sizeof(fw_patchfile_name));
         }
 
         UIM_VER("fw_patchfile_name = %s", fw_patchfile_name);
@@ -1266,7 +1292,7 @@ int proc_bdaddr()
         UIM_ERR("unable to open %s (%s)", BDADDR_SYSFS_ENTRY,strerror(errno));
         res =  UIM_FAIL;
     }
-    if( fd )
+    if (fd >= 0)
         close(fd);
     return res;
 }
@@ -1399,6 +1425,56 @@ void read_default_bdaddr(bdaddr_t *local_addr)
 #endif
 
 
+/* HCI snoop, if the ldisc or bt_stack.conf asks for it */
+static void start_hci_snoop_if_enabled(void)
+{
+    unsigned char snoop_enable = '0';
+    int fd_hcisnoop = open(LDISC_SYSFS_SNOOP, O_RDONLY);
+
+    if (fd_hcisnoop < 0) {
+        UIM_ERR("unable to open %s", LDISC_SYSFS_SNOOP);
+    } else {
+        if (read(fd_hcisnoop, &snoop_enable, 1) != 1)
+            snoop_enable = '0';
+        UIM_DBG("snoop_enable = %c", snoop_enable);
+        close(fd_hcisnoop);
+    }
+    if ((hci_snoop_enable == 1) || (snoop_enable == '1'))
+        v4l2_start_hci_snoop();
+}
+
+static void stop_hci_snoop_if_running(void)
+{
+    if (v4l2_get_hci_snoop_status() == HCI_SNOOP_RUNNING)
+        v4l2_stop_hci_snoop();
+}
+
+/*
+ * The UART brought up for an install request: the chip powered, the line
+ * discipline attached. A failure undoes it all, tty closed and power off,
+ * and leaves UIM polling: the kernel, having timed out, sets install OFF
+ * and asks again (brcm_sh_ldisc_start retries), which UIM must be there to
+ * see. Exiting for init to restart it missed those retries.
+ */
+static int uart_install(void)
+{
+    if (upio_set_bluetooth_power(1) != 0) {
+        UIM_ERR("unable to power the chip on");
+        return UIM_FAIL;
+    }
+
+    start_hci_snoop_if_enabled();
+
+    if (st_uart_config(V4L2_STATUS_ON) != 0) {
+        UIM_ERR("st_uart_config failed, back to polling");
+        cleanup();
+        stop_hci_snoop_if_running();
+        upio_set_bluetooth_power(0);
+        return UIM_FAIL;
+    }
+    return 0;
+}
+
 /*****************************************************************************
 * Main function
 *****************************************************************************/
@@ -1450,27 +1526,7 @@ int main(void)
     err = read(st_fd, &install, 1);
     if ((err > 0) && (install == V4L2_STATUS_ON)) {
         UIM_DBG("install already set");
-        upio_set_bluetooth_power(1);
-        // handle HCI snoop
-        int fd_hcisnoop = -1;
-        unsigned char snoop_enable = '0';
-        if ((fd_hcisnoop = open(LDISC_SYSFS_SNOOP, O_RDONLY))< 0) {
-            UIM_ERR("unable to open %s", LDISC_SYSFS_SNOOP);
-        }
-        else {
-            read(fd_hcisnoop, &snoop_enable, 1);
-            UIM_DBG("snoop_enable = %c", snoop_enable);
-            close(fd_hcisnoop);
-        }
-        if ((hci_snoop_enable == 1) || (snoop_enable=='1'))
-            v4l2_start_hci_snoop();
-        if (st_uart_config(install) != 0)
-        {
-            UIM_ERR("st_uart_config failed");
-            // cleanup as UIM failed to initialize uart
-            err_cleanup(st_fd);
-            return UIM_FAIL;
-        }
+        (void)uart_install();
     }
 
 RE_POLL:
@@ -1518,42 +1574,19 @@ RE_POLL_TILL_POLL_ERR:
 
         if ((install == V4L2_STATUS_ON) && (dev_fd == -1)) {
             UIM_DBG("set UART");
-            upio_set_bluetooth_power(1);
-            /* start hci snoop thread */
-            // handle HCI snoop
-            int fd_hcisnoop = -1;
-            unsigned char snoop_enable = '0';
-            if ((fd_hcisnoop = open(LDISC_SYSFS_SNOOP, O_RDONLY)) < 0){
-                UIM_ERR("unable to open %s", LDISC_SYSFS_SNOOP);
+            if (uart_install() == 0) {
+                UIM_DBG("set UART done");
+                goto RE_POLL_TILL_POLL_ERR;
             }
-            else {
-                read(fd_hcisnoop, &snoop_enable, 1);
-                UIM_DBG("snoop_enable = %c", snoop_enable);
-                close(fd_hcisnoop);
-            }
-            if ((hci_snoop_enable == 1) || (snoop_enable=='1'))
-                v4l2_start_hci_snoop();
-            if (st_uart_config(install)!=0)
-            {
-                UIM_ERR("st_uart_config failed");
-                // cleanup as UIM failed to initialize uart
-                err_cleanup(st_fd);
-                return UIM_FAIL;
-            }
-            UIM_DBG("set UART done");
+            goto RE_POLL;
+        }
+        else if (install == V4L2_STATUS_ON) {
+            /* Already up: nothing to do but keep listening */
+            UIM_DBG("install ON with the UART already up");
             goto RE_POLL_TILL_POLL_ERR;
         }
         else if (install == V4L2_STATUS_OFF) {
-                // handle HCI snoop
-                int fd_hcisnoop;
-                unsigned char snoop_enable;
-                fd_hcisnoop = open(LDISC_SYSFS_SNOOP, O_RDONLY);
-                read(fd_hcisnoop, &snoop_enable, 1);
-                UIM_DBG("snoop_enable = %c", snoop_enable);
-                close(fd_hcisnoop);
-                if(hci_snoop_enable == 1 || snoop_enable=='1'
-                    || (v4l2_get_hci_snoop_status() == HCI_SNOOP_RUNNING))
-                    v4l2_stop_hci_snoop();
+                stop_hci_snoop_if_running();
 
                 cleanup();
                 UIM_VER("setting upio power to 0");
@@ -1571,6 +1604,10 @@ RE_POLL_TILL_POLL_ERR:
             close(st_fd);
             UIM_ERR("Restarting UIM due to error!");
             return UIM_FAIL;
+        }
+        else {
+            UIM_ERR("unknown install value 0x%02x, ignored", install);
+            goto RE_POLL;
         }
     }
 

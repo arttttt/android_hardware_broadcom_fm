@@ -119,7 +119,7 @@ static int init_rfkill()
         fd = open(path, O_RDONLY);
         if (fd < 0)
         {
-            ALOGE("init_rfkill : open(%s) failed: %s (%c)\n", \
+            ALOGE("init_rfkill : open(%s) failed: %s (%d)\n", \
                  path, strerror(errno), errno);
             return -1;
         }
@@ -196,7 +196,7 @@ int upio_set_bluetooth_power(int on)
 
     if (fd < 0)
     {
-        ALOGE("set_bluetooth_power : open(%s) for write failed: %s (%c)",
+        ALOGE("set_bluetooth_power : open(%s) for write failed: %s (%d)",
             rfkill_state_path, strerror(errno), errno);
         return ret;
     }
@@ -204,7 +204,7 @@ int upio_set_bluetooth_power(int on)
     sz = write(fd, &buffer, 1);
 
     if (sz < 0) {
-        ALOGE("set_bluetooth_power : write(%s) failed: %s (%c)",
+        ALOGE("set_bluetooth_power : write(%s) failed: %s (%d)",
             rfkill_state_path, strerror(errno),errno);
     }
     else
