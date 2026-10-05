@@ -704,6 +704,15 @@ jboolean tune(JNIEnv *env, jobject thiz, jfloat freq)
     return ret <= 0 ? JNI_FALSE:JNI_TRUE;
 }
 
+/*
+ * The band FMRadio works in: FmUtils.LOWEST_STATION..HIGHEST_STATION in
+ * steps of STEP, 87.5-108 MHz at 100 kHz. The app has no other; a regional
+ * band would have to come from both.
+ */
+#define FM_BAND_LOW_KHZ   87500
+#define FM_BAND_HIGH_KHZ  108000
+#define FM_BAND_STEP_KHZ  100
+
 jboolean powerUp(JNIEnv *env, jobject thiz, jfloat freq)
 {
     int ret = 0;
@@ -717,7 +726,8 @@ jboolean powerUp(JNIEnv *env, jobject thiz, jfloat freq)
 
  //   ALOGI("%s, [freq=%d]\n", __func__, (int)freq);
     tmp_freq = (int)(freq * 1000);        //Eg, 87.5 * 10 --> 875
-    ret = androidFmRadioRxStart(env, thiz, 87500, 108000,  tmp_freq, 100);
+    ret = androidFmRadioRxStart(env, thiz, FM_BAND_LOW_KHZ, FM_BAND_HIGH_KHZ,
+                                tmp_freq, FM_BAND_STEP_KHZ);
  //   ALOGD("%s, [ret=%d]\n", __func__, ret);
     return ret?JNI_FALSE:JNI_TRUE;
 }

@@ -108,8 +108,14 @@ static void rds_reset(fm_v4l2_data* session)
 
 
 fm_v4l2_data* get_session_data(void **data) {return *data;}
-int get_standard_freq(int freq, int fact) {return freq / fact;}
-int get_proprietary_freq(int freq, int fact) {return freq * fact;}
+
+/*
+ * kHz to the driver's units and back. fact is 16 for a tuner in 62.5 Hz
+ * units (V4L2_TUNER_CAP_LOW) and 0.016 for one in 62.5 kHz units: taken as
+ * an int it was 0 for the latter, and the conversion divided by it.
+ */
+int get_standard_freq(int freq, float fact) {return (int) (freq / fact + 0.5f);}
+int get_proprietary_freq(int freq, float fact) {return (int) (freq * fact + 0.5f);}
 
 void* th_read_rds(void *thread_rds_info);
 
@@ -190,7 +196,7 @@ static int v4l2_rx_start_func (void **data, int low_freq, int high_freq, int def
   }
 
   session->fact = get_fact(session->fd, &session->vt);
-  if ( session->fact < 0) {
+  if ( session->fact <= 0) {
       ALOGE("error on get fact\n");
       goto fail;
   }
@@ -308,9 +314,10 @@ int v4l2_get_frequency (void ** session_data){
   if (ret < 0)
       return -1;
 
-  session->freq = get_standard_freq(ret, session->fact);
+  /* session->freq is in the driver's units; the caller gets kHz */
+  session->freq = ret;
 
-  return session->freq;
+  return get_standard_freq(ret, session->fact);
 }
 
 int v4l2_get_threshold (void ** session_data){
