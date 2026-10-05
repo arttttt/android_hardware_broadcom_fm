@@ -371,6 +371,8 @@ static bool androidFmRadioRxEnterScanning(enum FmRadioCommand_t event)
     ok = androidFmRadioIsValidEventForState(&fmReceiverSession, event);
     if (ok) {
         FMRADIO_SET_STATE(&fmReceiverSession, FMRADIO_STATE_SCANNING);
+        /* a stop belongs to the scan it was sent to */
+        fmReceiverSession.lastScanAborted = false;
     }
     pthread_mutex_unlock(fmReceiverSession.dataMutex_p);
 
@@ -473,9 +475,14 @@ androidFmRadioRxScanDown(JNIEnv * __attribute__((unused)) env, jobject __attribu
     return androidFmRadioRxScan(FMRADIO_SEEK_DOWN, frequency);
 }
 
-static int androidFmRadioRxFullScan(int *frequencies)
+/*
+ * Up to max stations into frequencies, in kHz; returns how many, or -1.
+ * The vendor library says how many it found: that count is what is read.
+ */
+static int androidFmRadioRxFullScan(int *frequencies, int max)
 {
-    int retval;
+    int retval = -1;
+    int count = 0;
     int *frequencies_p = NULL;
     int *rssi_p = NULL;
 
@@ -519,11 +526,11 @@ static int androidFmRadioRxFullScan(int *frequencies)
         FMRADIO_SET_STATE(&fmReceiverSession, FMRADIO_STATE_STARTED);
     }
 
-    if (retval >= 0) {
-        for (int i=0; i < 50; i++) {
+    if (retval >= 0 && frequencies_p != NULL) {
+        for (int i = 0; i < retval && count < max; i++) {
            if (frequencies_p[i] <= 0)
                 break;
-           frequencies[i] = frequencies_p[i];
+           frequencies[count++] = frequencies_p[i];
         }
     }
 
@@ -542,19 +549,16 @@ static int androidFmRadioRxFullScan(int *frequencies)
     }
     pthread_mutex_unlock(fmReceiverSession.dataMutex_p);
 
-    return 0;
+    return retval >= 0 ? count : -1;
 }
 
-static int androidFmRadioRxStartFullScan(JNIEnv * __attribute__((unused)) env, jobject __attribute__((unused)) obj, int *frequencies)
+static int androidFmRadioRxStartFullScan(JNIEnv * __attribute__((unused)) env, jobject __attribute__((unused)) obj, int *frequencies, int max)
 {
   //  ALOGI("androidFmRadioRxStartFullScan\n");
-    int retval = 0;
-
     if (!androidFmRadioRxEnterScanning(FMRADIO_EVENT_FULL_SCAN)) {
         return -1;
     }
-    androidFmRadioRxFullScan(frequencies);
-    return retval;
+    return androidFmRadioRxFullScan(frequencies, max);
 }
 
 static void androidFmRadioRxSetForceMono(JNIEnv * __attribute__((unused)) env, jobject __attribute__((unused)) obj,
@@ -831,23 +835,23 @@ jshortArray autoScan(JNIEnv *env, jobject thiz)
     int ret = 0;
     jshortArray scanChlarray;
     int chl_cnt = 0;
-    int ScanTBL[50];
-    int short fixedTable[50];
+    int ScanTBL[50] = { 0 };
+    short fixedTable[50];
 
-    ret = androidFmRadioRxStartFullScan(env, thiz, ScanTBL);
+    ret = androidFmRadioRxStartFullScan(env, thiz, ScanTBL, 50);
     if (ret < 0) {
         ALOGE("scan failed!\n");
         scanChlarray = NULL;
         goto out;
     }
 
-    for (int i =0; i <= 50; i++) {
+    /* kHz to the app's 100 kHz units */
+    for (int i = 0; i < ret; i++) {
          int val = ScanTBL[i]/100;
          if (val <= 0)
               break;
-         fixedTable[i] = val & 0xFFFF;
+         fixedTable[chl_cnt++] = val & 0xFFFF;
        //  ALOGD("Add freq: %d", fixedTable[i]);
-         chl_cnt++;
     }
 
     if (chl_cnt > 0) {
@@ -880,7 +884,8 @@ jboolean stopScan(JNIEnv *env, jobject thiz)
         ALOGE("%s, error, [ret=%d]\n", __func__, ret);
     }
     ALOGD("%s, [ret=%d]\n", __func__, ret);
-    return ret?JNI_TRUE:JNI_FALSE;
+    /* FMRADIO_OK is a stop sent */
+    return ret == FMRADIO_OK ? JNI_TRUE : JNI_FALSE;
 }
 
 

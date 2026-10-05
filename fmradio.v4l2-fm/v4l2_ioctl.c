@@ -259,3 +259,30 @@ int set_force_mono(int fd, struct v4l2_tuner *vt, int force_mono){
 
     return set_v4l2_tuner(fd, vt);
 }
+
+/*
+ * A seek done by the tuner itself, from the current frequency: the
+ * driver tunes to the next station up or down the band within low..high
+ * (62.5 Hz units, as V4L2_TUNER_CAP_LOW gives), in steps of spacing_hz,
+ * and returns once it is there. 0 on a station; -ENODATA when there is
+ * none; -ENOTTY or -EINVAL when the driver has no hardware seek; another
+ * -errno on failure.
+ */
+int hw_freq_seek(int fd, int upward, int wrap, unsigned int spacing_hz,
+                 unsigned int low, unsigned int high)
+{
+    struct v4l2_hw_freq_seek seek;
+
+    memset(&seek, 0, sizeof(seek));
+    seek.tuner = 0;
+    seek.type = V4L2_TUNER_RADIO;
+    seek.seek_upward = upward ? 1 : 0;
+    seek.wrap_around = wrap ? 1 : 0;
+    seek.spacing = spacing_hz;
+    seek.rangelow = low;
+    seek.rangehigh = high;
+
+    if (ioctl(fd, VIDIOC_S_HW_FREQ_SEEK, &seek) < 0)
+        return -errno;
+    return 0;
+}

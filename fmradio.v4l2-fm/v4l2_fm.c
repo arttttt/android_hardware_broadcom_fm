@@ -71,7 +71,7 @@ typedef struct fm_v4l2_data_t {
   float fact;
   struct v4l2_tuner vt;
   pthread_t thread_rds;                                 /* thread used to read rds data */
-  char scan_band_run;                                   /* flag to stop the scan*/
+  volatile char scan_band_run;                          /* flag to stop the scan, set from another thread */
   char thread_rds_run;                                  /* flag to stop the rds thread*/
 } fm_v4l2_data;
 
@@ -169,6 +169,8 @@ static int v4l2_rx_start_func (void **data, int low_freq, int high_freq, int def
   session->high_freq =  get_proprietary_freq(high_freq,  session->fact);
   session->grid = get_proprietary_freq(grid,  session->fact);
   session->threshold = DEFAULT_THRESHOLD;
+  /* a scan runs until stopped; see v4l2_scan */
+  session->scan_band_run = SCAN_RUN;
   
   if (set_freq(session->fd, session->freq) < 0 ){
       ALOGE("error on set freq\n");
@@ -319,64 +321,121 @@ int v4l2_is_playing_in_stereo (void ** session_data){
     return ret;
 }
 
-int v4l2_scan (void ** session_data, enum fmradio_seek_direction_t direction){
-   fm_v4l2_data* session;
-   int increment, rate, freqi, ret;
-
-   ALOGI("%s:\n", __FUNCTION__);
-   session = get_session_data(session_data);
-
-   session->scan_band_run=SCAN_RUN;
-   if (direction==FMRADIO_SEEK_DOWN)
-     increment = -  session->grid;
-   else                                      //FMRADIO_SEEK_UP
-     increment =  session->grid;
-
-  freqi = session->freq + increment;         //drop the current frequency
-  ALOGI("Starting scanning...\n");
-  while (session->scan_band_run==SCAN_RUN){
-
-      ret= set_freq(session->fd, freqi);
-      if (ret<0)
-          return -1;
-
-      usleep(LOCKTIME);                       // let it lock on
-      rate= get_signal_strength( session->fd,  &session->vt);
-      if (rate < 0)
-         return -1;
-
-      ALOGI("final rate %d > %d \n", rate , session->threshold);
-
-      if (rate >  session->threshold){
-      ALOGI("Found freq, %d\n", freqi);
-      session->scan_band_run=SCAN_STOP;
-      session->freq = freqi;
-      return get_standard_freq(freqi, session->fact);
-      }
-
-      freqi +=  increment;
-      if ( freqi >  session->high_freq)
-         freqi =  session->low_freq;
-      if ( freqi <  session->low_freq)
-          freqi =  session->high_freq;
-  }
-  ALOGI("End scan\n");
-  return 0;
+/* The seek step, in Hz, for VIDIOC_S_HW_FREQ_SEEK */
+static unsigned int seek_spacing_hz(fm_v4l2_data* session)
+{
+  return (unsigned int) get_standard_freq(session->grid, session->fact) * 1000;
 }
 
+/* A driver that has no hardware seek */
+static int no_hw_seek(int err)
+{
+  return err == -ENOTTY || err == -EINVAL;
+}
+
+/*
+ * The seek done in software, for a driver without a hardware one: a step at
+ * a time round the band, from the current frequency, until a signal is
+ * over the threshold. Once round at most, and it stops when asked. Returns
+ * the frequency found, or -1 with the tuner back where it was.
+ */
+static int sw_scan(fm_v4l2_data* session, int upward)
+{
+  int increment = upward ? session->grid : -session->grid;
+  int steps = (session->high_freq - session->low_freq) / session->grid + 1;
+  int freqi = session->freq;
+  int rate, i;
+
+  ALOGI("Starting software scanning...\n");
+  for (i = 0; i < steps && session->scan_band_run == SCAN_RUN; i++) {
+      freqi += increment;
+      if (freqi > session->high_freq)
+          freqi = session->low_freq;
+      if (freqi < session->low_freq)
+          freqi = session->high_freq;
+
+      if (set_freq(session->fd, freqi) < 0)
+          break;
+
+      usleep(LOCKTIME);                       // let it lock on
+      rate = get_signal_strength(session->fd, &session->vt);
+      if (rate < 0)
+          break;
+
+      ALOGI("final rate %d > %d \n", rate, session->threshold);
+      if (rate > session->threshold) {
+          ALOGI("Found freq, %d\n", freqi);
+          session->freq = freqi;
+          return get_standard_freq(freqi, session->fact);
+      }
+  }
+
+  set_freq(session->fd, session->freq);
+  return -1;
+}
+
+/*
+ * The next station up or down from the current one. The tuner seeks by
+ * itself (VIDIOC_S_HW_FREQ_SEEK, wrapping round the band), which takes a
+ * moment where stepping in software took seconds; software is only for a
+ * driver without it. Returns the frequency found, or -1 -- no station,
+ * stopped, or failed -- with the tuner back where it was.
+ *
+ * A stop asked for while the scan runs is kept until the scan ends, and
+ * cleared then: setting "run" at the start would overwrite a stop that
+ * came in before it. The JNI only sends a stop while it is SCANNING. A
+ * hardware seek cannot be stopped; it ends at the next station.
+ */
+int v4l2_scan (void ** session_data, enum fmradio_seek_direction_t direction){
+  fm_v4l2_data* session;
+  int upward, ret, freq;
+
+  ALOGI("%s:\n", __FUNCTION__);
+  session = get_session_data(session_data);
+  upward = direction != FMRADIO_SEEK_DOWN;
+
+  ret = hw_freq_seek(session->fd, upward, 1, seek_spacing_hz(session),
+                     session->low_freq, session->high_freq);
+  if (ret == 0) {
+      freq = get_freq(session->fd);
+      if (freq >= 0) {
+          session->freq = freq;
+          ret = get_standard_freq(freq, session->fact);
+      } else {
+          set_freq(session->fd, session->freq);
+          ret = -1;
+      }
+  } else if (no_hw_seek(ret)) {
+      ret = sw_scan(session, upward);
+  } else {
+      ALOGI("hardware seek: %s\n", ret == -ENODATA ? "no station" : strerror(-ret));
+      set_freq(session->fd, session->freq);
+      ret = -1;
+  }
+
+  session->scan_band_run = SCAN_RUN;
+  ALOGI("End scan\n");
+  return ret;
+}
+
+/*
+ * Every station in the band, low to high, by hardware seeks one after the
+ * other (or a software sweep, without them), stopping when asked between
+ * two. The result ends with a 0; returns the number found, or -1. The tuner
+ * goes back to where it was.
+ */
 int v4l2_full_scan (void ** session_data, int ** found_freqs, int ** signal_strenghts){
   fm_v4l2_data* session;
   int founded, i, ret;
-  int freqi, rate;
+  int freqi, rate, prev;
   int *temp_freq, *temp_strenght;
 
   ALOGI("%s:\n", __FUNCTION__);
   session = get_session_data(session_data);
 
-  session->scan_band_run=SCAN_RUN;
-
   *found_freqs = NULL;
   *signal_strenghts = NULL;
+  founded = 0;
 
   temp_freq = (int *) malloc(sizeof(int) *MAX_FREQS);
   temp_strenght = (int *) malloc(sizeof(int) *MAX_FREQS);
@@ -388,7 +447,46 @@ int v4l2_full_scan (void ** session_data, int ** found_freqs, int ** signal_stre
 
   ALOGI("Starting full scanning...low freq:%d, high freq:%d\n", session->low_freq, session->high_freq);
 
-  for (freqi =  session->low_freq, founded=0 ; ((freqi < session->high_freq)  && (founded < MAX_FREQS) && (session->scan_band_run==SCAN_RUN)) ; freqi += session->grid){
+  /* From the top of the band an upward seek starts again at the bottom */
+  if (set_freq(session->fd, session->high_freq) < 0) {
+      founded = -1;
+      goto out;
+  }
+
+  prev = -1;
+  while (founded < MAX_FREQS && session->scan_band_run == SCAN_RUN) {
+      ret = hw_freq_seek(session->fd, 1, 0, seek_spacing_hz(session),
+                         session->low_freq, session->high_freq);
+      if (ret == -ENODATA)
+          break;
+      if (ret < 0) {
+          if (prev < 0 && no_hw_seek(ret))
+              goto software;
+          ALOGE("hardware seek failed: %s\n", strerror(-ret));
+          founded = -1;
+          goto out;
+      }
+
+      freqi = get_freq(session->fd);
+      if (freqi < 0) {
+          founded = -1;
+          goto out;
+      }
+      /* past the top, the seek has come round again */
+      if (freqi <= prev)
+          break;
+      prev = freqi;
+
+      rate = get_signal_strength(session->fd, &session->vt);
+      ALOGI("Founded index %d, freq %d, signal %d\n", founded, freqi, rate);
+      temp_freq[founded] = freqi;
+      temp_strenght[founded] = rate < 0 ? 0 : rate;
+      founded++;
+  }
+  goto found;
+
+software:
+  for (freqi = session->low_freq; ((freqi <= session->high_freq) && (founded < MAX_FREQS) && (session->scan_band_run==SCAN_RUN)) ; freqi += session->grid){
 
       ret = set_freq(session->fd, freqi);
       if (ret<0) {
@@ -413,6 +511,7 @@ int v4l2_full_scan (void ** session_data, int ** found_freqs, int ** signal_stre
       }
   }
 
+found:
   /* One more than found, for a 0 after the last: the caller reads the
    * frequencies up to it */
   *found_freqs = (int *) malloc(sizeof(int) * (founded + 1));
@@ -440,7 +539,8 @@ int v4l2_full_scan (void ** session_data, int ** found_freqs, int ** signal_stre
 out:
   free(temp_freq);
   free(temp_strenght);
-  session->scan_band_run=SCAN_STOP;
+  set_freq(session->fd, session->freq);
+  session->scan_band_run = SCAN_RUN;
 
   return founded;
 }
@@ -453,7 +553,8 @@ int v4l2_stop_scan(void ** session_data){
   session->scan_band_run=SCAN_STOP;
   ALOGI("Stop scan value is %d\n", session->scan_band_run);
 
-  return 1;
+  /* 0: the JNI takes anything else for a failure to stop */
+  return 0;
 }
 
 int v4l2_set_force_mono (void ** session_data, int force_mono){
