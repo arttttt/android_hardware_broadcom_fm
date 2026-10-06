@@ -196,9 +196,10 @@ static int v4l2_rx_start_func (void **data, int low_freq, int high_freq, int def
 
   /*
    * De-emphasis has to match the transmitters': 50 us in Europe, Russia and
-   * most of the world, 75 us in the Americas and Korea. The app does not
-   * pass it, so the device says which through ro.vendor.fm.deemphasis
-   * (50 if unset). Set before tuning, so the first audio is right.
+   * most of the world, 75 us in the Americas and Korea. The app's region
+   * sets it (set_deemphasis); until it has, the device's default stands,
+   * ro.vendor.fm.deemphasis (50 if unset). Set before tuning, so the first
+   * audio is right.
    */
   {
       int deemph = property_get_int32("ro.vendor.fm.deemphasis", 50);
@@ -899,6 +900,16 @@ int v4l2_get_rds(void * * session_data, struct fmradio_rds_bundle_t * fmradio_rd
   return changed;
 }
 
+/* The region's de-emphasis, 50 or 75 us */
+static int v4l2_set_deemphasis(void** session_data, int usec)
+{
+  fm_v4l2_data* session = get_session_data(session_data);
+
+  if (usec != 50 && usec != 75)
+    return -1;
+  return set_deemphasis(session->fd, usec) < 0 ? -1 : 0;
+}
+
 int register_fmradio_functions(long *signature, struct fmradio_vendor_methods_t *vendor_methods)
 {
     memset(vendor_methods, 0, sizeof(*vendor_methods));
@@ -921,6 +932,7 @@ int register_fmradio_functions(long *signature, struct fmradio_vendor_methods_t 
     vendor_methods->set_force_mono=v4l2_set_force_mono;
     vendor_methods->mute=v4l2_mute;
     vendor_methods->get_rds=v4l2_get_rds;
+    vendor_methods->set_deemphasis = v4l2_set_deemphasis;
 
     *signature = FMRADIO_SIGNATURE;
     return 0;

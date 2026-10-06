@@ -134,6 +134,8 @@ struct fmradio_vendor_methods_t {
     int (*set_rds_data) (void ** session_data, char * key, void * value);
     int (*mute)(void** session_data, int mute);
     int (*get_rds)(void** session_data, struct fmradio_rds_bundle_t * fmradio_rds_bundle);
+    /* the transmitters' de-emphasis, 50 or 75 us; NULL if not settable */
+    int (*set_deemphasis)(void** session_data, int usec);
 };
 
 typedef int (*fmradio_reg_func_t) (unsigned int * signature_p,

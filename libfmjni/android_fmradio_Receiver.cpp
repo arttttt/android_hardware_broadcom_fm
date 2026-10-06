@@ -705,13 +705,30 @@ jboolean tune(JNIEnv *env, jobject thiz, jfloat freq)
 }
 
 /*
- * The band FMRadio works in: FmUtils.LOWEST_STATION..HIGHEST_STATION in
- * steps of STEP, 87.5-108 MHz at 100 kHz. The app has no other; a regional
- * band would have to come from both.
+ * The band FMRadio works in, its region's: the limits and step seeks and
+ * scans keep to, and the de-emphasis. Set by the app (setBand) before
+ * powerUp; until then, 87.5-108 MHz at 100 kHz and the device's own
+ * de-emphasis (0).
  */
-#define FM_BAND_LOW_KHZ   87500
-#define FM_BAND_HIGH_KHZ  108000
-#define FM_BAND_STEP_KHZ  100
+static int bandLowKhz = 87500;
+static int bandHighKhz = 108000;
+static int bandStepKhz = 100;
+static int bandDeemphasisUs = 0;
+
+void setBand(JNIEnv * __attribute__((unused)) env, jobject __attribute__((unused)) thiz,
+             jint lowKhz, jint highKhz, jint stepKhz, jint deemphasisUs)
+{
+    if (lowKhz <= 0 || highKhz <= lowKhz || stepKhz <= 0) {
+        ALOGE("%s: not a band: %d-%d kHz, step %d\n", __func__, lowKhz, highKhz, stepKhz);
+        return;
+    }
+    pthread_mutex_lock(fmReceiverSession.dataMutex_p);
+    bandLowKhz = lowKhz;
+    bandHighKhz = highKhz;
+    bandStepKhz = stepKhz;
+    bandDeemphasisUs = deemphasisUs;
+    pthread_mutex_unlock(fmReceiverSession.dataMutex_p);
+}
 
 jboolean powerUp(JNIEnv *env, jobject thiz, jfloat freq)
 {
@@ -726,8 +743,16 @@ jboolean powerUp(JNIEnv *env, jobject thiz, jfloat freq)
 
  //   ALOGI("%s, [freq=%d]\n", __func__, (int)freq);
     tmp_freq = (int)(freq * 1000);        //Eg, 87.5 * 10 --> 875
-    ret = androidFmRadioRxStart(env, thiz, FM_BAND_LOW_KHZ, FM_BAND_HIGH_KHZ,
-                                tmp_freq, FM_BAND_STEP_KHZ);
+    ret = androidFmRadioRxStart(env, thiz, bandLowKhz, bandHighKhz,
+                                tmp_freq, bandStepKhz);
+    if (ret == 0 && bandDeemphasisUs != 0) {
+        pthread_mutex_lock(fmReceiverSession.dataMutex_p);
+        if (fmReceiverSession.vendorMethods_p->set_deemphasis == NULL ||
+                fmReceiverSession.vendorMethods_p->set_deemphasis(
+                        &fmReceiverSession.vendorData_p, bandDeemphasisUs) < 0)
+            ALOGW("%s: de-emphasis %d us not set\n", __func__, bandDeemphasisUs);
+        pthread_mutex_unlock(fmReceiverSession.dataMutex_p);
+    }
  //   ALOGD("%s, [ret=%d]\n", __func__, ret);
     return ret?JNI_FALSE:JNI_TRUE;
 }
@@ -1004,6 +1029,7 @@ static JNINativeMethod gMethods[] = {
     {"setRds",    "(Z)I", (void*)setRds  },
     {"readRds",   "()S", (void*)readRds },
     {"getPi",     "()I", (void*)getPi  },
+    {"setBand",   "(IIII)V", (void*)setBand },
     {"getPs",     "()[B", (void*)getPs  },
     {"getLrText", "()[B", (void*)getLrText},
     {"activeAf",  "()S", (void*)activeAf},
