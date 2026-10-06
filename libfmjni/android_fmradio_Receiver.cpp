@@ -752,6 +752,7 @@ jint setMute(JNIEnv *env, jobject thiz, jboolean mute)
  */
 
 /* FmService's RDS event bits */
+#define RDS_EVENT_PI_CODE         0x0002
 #define RDS_EVENT_PROGRAMNAME     0x0008
 #define RDS_EVENT_LAST_RADIOTEXT  0x0040
 #define RDS_EVENT_AF              0x0080
@@ -787,6 +788,8 @@ jshort readRds(JNIEnv * __attribute__((unused)) env, jobject __attribute__((unus
             &fmReceiverSession.vendorData_p, &bundle);
     if (changed >= 0) {
         rdsLatest = bundle;
+        if (changed & FMRADIO_RDS_PI_CHANGED)
+            events |= RDS_EVENT_PI_CODE;
         if (changed & FMRADIO_RDS_PS_CHANGED)
             events |= RDS_EVENT_PROGRAMNAME;
         if (changed & FMRADIO_RDS_RT_CHANGED)
@@ -843,6 +846,17 @@ jbyteArray getLrText(JNIEnv *env, jobject __attribute__((unused)) thiz)
 }
 
 /* The station name */
+/* The station's PI code, 0 until known */
+jint getPi(JNIEnv * __attribute__((unused)) env, jobject __attribute__((unused)) thiz)
+{
+    jint pi;
+
+    pthread_mutex_lock(fmReceiverSession.dataMutex_p);
+    pi = rdsLatest.pi;
+    pthread_mutex_unlock(fmReceiverSession.dataMutex_p);
+    return pi;
+}
+
 jbyteArray getPs(JNIEnv *env, jobject __attribute__((unused)) thiz)
 {
     return rdsText(env, rdsLatest.psn, RDS_PSN_MAX_LENGTH);
@@ -989,6 +1003,7 @@ static JNINativeMethod gMethods[] = {
     {"stopScan",  "()Z", (void*)stopScan },
     {"setRds",    "(Z)I", (void*)setRds  },
     {"readRds",   "()S", (void*)readRds },
+    {"getPi",     "()I", (void*)getPi  },
     {"getPs",     "()[B", (void*)getPs  },
     {"getLrText", "()[B", (void*)getLrText},
     {"activeAf",  "()S", (void*)activeAf},

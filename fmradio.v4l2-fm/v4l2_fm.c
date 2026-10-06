@@ -77,7 +77,8 @@ typedef struct rds_state_t {
   int af[RDS_MAX_AFS];
   int num_afs;
 
-  unsigned short pi;
+  unsigned short pi;                  /* the last group's */
+  unsigned short pi_out;              /* published: seen in two groups running */
   short pty, tp, ta, ms;
   int changed;                        /* FMRADIO_RDS_*_CHANGED since read */
 } rds_state;
@@ -683,6 +684,12 @@ static void rds_group(rds_state* rds)
   int version_b = (g[3] >> 3) & 1;
   int seg, i;
 
+  /* the station's identity: taken once two groups agree, an errored
+   * block A otherwise giving another station's code */
+  if (rds->pi == ((g[1] << 8) | g[0]) && rds->pi != rds->pi_out) {
+    rds->pi_out = rds->pi;
+    rds->changed |= FMRADIO_RDS_PI_CHANGED;
+  }
   rds->pi = (g[1] << 8) | g[0];
   rds->tp = (g[3] >> 2) & 1;
   rds->pty = ((g[3] & 0x03) << 3) | (g[2] >> 5);
@@ -844,7 +851,7 @@ int v4l2_get_rds(void * * session_data, struct fmradio_rds_bundle_t * fmradio_rd
   }
 
   memset(fmradio_rds_bundle, 0, sizeof(*fmradio_rds_bundle));
-  fmradio_rds_bundle->pi = rds->pi;
+  fmradio_rds_bundle->pi = rds->pi_out;
   fmradio_rds_bundle->tp = rds->tp;
   fmradio_rds_bundle->pty = rds->pty;
   fmradio_rds_bundle->ta = rds->ta;
