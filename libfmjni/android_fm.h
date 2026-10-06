@@ -25,6 +25,10 @@
 #define RDS_MAX_AFS 25
 #define RDS_PSN_MAX_LENGTH 8
 #define RDS_RT_MAX_LENGTH 64
+/* The texts as UTF-8, with the NUL: a character of the RDS table is up
+ * to 3 bytes; a Long PS is 32 bytes, an eRT 128 */
+#define RDS_PSN_UTF8_SIZE (3 * 32 + 1)
+#define RDS_RT_UTF8_SIZE (3 * RDS_RT_MAX_LENGTH + 1)
 #define RDS_CT_MAX_LENGTH 14
 #define RDS_PTYN_MAX_LENGTH 8
 #define RDS_NUMBER_OF_TMC 3
@@ -83,8 +87,8 @@ struct fmradio_rds_bundle_t {
     short ms;
     short num_afs;
     int af[RDS_MAX_AFS];
-    char psn[RDS_PSN_MAX_LENGTH + 1];
-    char rt[RDS_RT_MAX_LENGTH + 1];
+    char psn[RDS_PSN_UTF8_SIZE];        /* UTF-8 */
+    char rt[RDS_RT_UTF8_SIZE];          /* UTF-8 */
     char ct[RDS_CT_MAX_LENGTH + 1];
     char ptyn[RDS_PTYN_MAX_LENGTH + 1];
     short tmc[RDS_NUMBER_OF_TMC];

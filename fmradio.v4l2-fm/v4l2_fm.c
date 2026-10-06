@@ -36,6 +36,7 @@
 #include <pthread.h>
 #include "../libfmjni/android_fm.h"
 #include "v4l2_ioctl.h"
+#include "rds_text.h"
 
 //RDS
 #define RDS_THREAD_ON                    1
@@ -55,24 +56,33 @@
 
 /*
  * RDS as it comes in: groups put together from the blocks the driver
- * reads out (a group may straddle two reads), and the station name (PS)
- * and radio text (RT) put together from the groups' segments. What is
- * complete is published, and get_rds says what changed.
+ * reads out (a group may straddle two reads), and the texts put together
+ * from the groups' segments (rds_text.c): the station name (PS, 0A/0B)
+ * and its long form (Long PS, 15A), the radio text (RT, 2A/2B) and its
+ * enhanced form (eRT, the open data application 0x6552). What is
+ * complete is published as UTF-8, the long and enhanced forms before the
+ * plain ones, and get_rds says what changed.
  */
+#define RDS_ODA_ERT  0x6552
+
 typedef struct rds_state_t {
   /* the group being put together: 4 blocks of 2 bytes */
   unsigned char group[GROUP_SIZE];
   int next_block;                     /* the block expected, 0..3 */
+  unsigned int corrected;             /* the group's blocks the chip corrected */
 
-  char ps[RDS_PSN_MAX_LENGTH];        /* being put together */
-  unsigned int ps_have;               /* segments received, a bit each */
-  char ps_out[RDS_PSN_MAX_LENGTH + 1];
-
-  char rt[RDS_RT_MAX_LENGTH];
-  unsigned int rt_have;
-  int rt_len;                         /* up to the 0x0D, or -1 until seen */
+  rds_text ps, long_ps, rt, ert;
   int rt_ab;                          /* the A/B flag: a change is new text */
-  char rt_out[RDS_RT_MAX_LENGTH + 1];
+  int ab_cand;                        /* a change seen in a corrected group */
+  int ert_group;                      /* its group, type << 1 | B; -1: none */
+  enum rds_charset ert_charset;
+
+  char ps_out[RDS_PSN_UTF8_SIZE];
+  char long_ps_out[RDS_PSN_UTF8_SIZE];
+  char rt_out[RDS_RT_UTF8_SIZE];
+  char ert_out[RDS_RT_UTF8_SIZE];
+  char psn_pub[RDS_PSN_UTF8_SIZE];    /* as published */
+  char rt_pub[RDS_RT_UTF8_SIZE];
 
   int af[RDS_MAX_AFS];
   int num_afs;
@@ -102,9 +112,16 @@ typedef struct fm_v4l2_data_t {
 /* A new frequency: whatever RDS was gathered was another station's */
 static void rds_reset(fm_v4l2_data* session)
 {
-  memset(&session->rds, 0, sizeof(session->rds));
-  session->rds.rt_len = -1;
-  session->rds.rt_ab = -1;
+  rds_state* rds = &session->rds;
+
+  memset(rds, 0, sizeof(*rds));
+  rds_text_init(&rds->ps, RDS_PSN_MAX_LENGTH, 2, 0);
+  rds_text_init(&rds->long_ps, 32, 4, 1);
+  rds_text_init(&rds->rt, RDS_RT_MAX_LENGTH, 4, 1);
+  rds_text_init(&rds->ert, RDS_TEXT_MAX_BYTES, 4, 1);
+  rds->rt_ab = -1;
+  rds->ab_cand = -1;
+  rds->ert_group = -1;
 }
 
 
@@ -652,12 +669,6 @@ int v4l2_is_tuned_to_valid_channel (void ** session_data){
     return 0;
 }
 
-/* RDS text bytes as text: printable kept, anything else a space */
-static char rds_char(unsigned char c)
-{
-  return (c >= 0x20 && c != 0x7f) ? (char) c : ' ';
-}
-
 /* AF codes 1..204 are 87.6..107.9 MHz, in kHz; anything else is not a
  * frequency (fillers, counts, LF/MF) */
 static void rds_add_af(rds_state* rds, unsigned char code)
@@ -676,13 +687,39 @@ static void rds_add_af(rds_state* rds, unsigned char code)
   }
 }
 
+/* A text complete: to UTF-8 in out (size out_size) */
+static void rds_text_out(const rds_text* t, enum rds_charset charset,
+                         char* out, size_t out_size)
+{
+  rds_to_utf8(t->raw, rds_text_length(t), charset, out, out_size);
+}
+
+/* What the app gets: the long and enhanced forms if the station sends them */
+static void rds_publish(rds_state* rds)
+{
+  const char* psn = rds->long_ps_out[0] ? rds->long_ps_out : rds->ps_out;
+  const char* rt = rds->ert_out[0] ? rds->ert_out : rds->rt_out;
+
+  if (strcmp(psn, rds->psn_pub) != 0) {
+    strcpy(rds->psn_pub, psn);
+    rds->changed |= FMRADIO_RDS_PS_CHANGED;
+  }
+  if (strcmp(rt, rds->rt_pub) != 0) {
+    strcpy(rds->rt_pub, rt);
+    rds->changed |= FMRADIO_RDS_RT_CHANGED;
+  }
+}
+
 /* One whole group: blocks A..D, each [lsb, msb] */
 static void rds_group(rds_state* rds)
 {
   unsigned char* g = rds->group;
   int type = g[3] >> 4;                       /* block B msb: group type */
   int version_b = (g[3] >> 3) & 1;
-  int seg, i;
+  int code = (type << 1) | version_b;
+  /* a text's bytes are in blocks B (its segment) and C, D */
+  int suspect = (rds->corrected & 0x0e) != 0;
+  unsigned char c[4];
 
   /* the station's identity: taken once two groups agree, an errored
    * block A otherwise giving another station's code */
@@ -694,23 +731,29 @@ static void rds_group(rds_state* rds)
   rds->tp = (g[3] >> 2) & 1;
   rds->pty = ((g[3] & 0x03) << 3) | (g[2] >> 5);
 
+  /* blocks C and D, in order */
+  c[0] = g[5]; c[1] = g[4]; c[2] = g[7]; c[3] = g[6];
+
+  if (rds->ert_group >= 0 && code == rds->ert_group) {
+    /* eRT: 32 segments of 4 bytes */
+    if (rds_text_put(&rds->ert, g[2] & 0x1f, c, suspect))
+      rds_text_out(&rds->ert, rds->ert_charset, rds->ert_out,
+                   sizeof(rds->ert_out));
+    rds_publish(rds);
+    return;
+  }
+
   switch (type) {
   case 0:                                     /* 0A/0B: PS, TA/MS, AF */
     rds->ta = (g[2] >> 4) & 1;
     rds->ms = (g[2] >> 3) & 1;
-    seg = g[2] & 0x03;
-    rds->ps[seg * 2] = rds_char(g[7]);
-    rds->ps[seg * 2 + 1] = rds_char(g[6]);
-    rds->ps_have |= 1u << seg;
-    if (rds->ps_have == 0x0f) {
-      if (memcmp(rds->ps, rds->ps_out, RDS_PSN_MAX_LENGTH) != 0) {
-        memcpy(rds->ps_out, rds->ps, RDS_PSN_MAX_LENGTH);
-        rds->ps_out[RDS_PSN_MAX_LENGTH] = '\0';
-        rds->changed |= FMRADIO_RDS_PS_CHANGED;
-      }
-      rds->ps_have = 0;
+    if (rds_text_put(&rds->ps, g[2] & 0x03, c + 2, suspect)) {
+      rds_text_out(&rds->ps, RDS_CHARSET_BASIC, rds->ps_out,
+                   sizeof(rds->ps_out));
+      /* again from the start: a name may change, segment by segment */
+      rds->ps.have = 0;
     }
-    if (!version_b) {
+    if (!version_b && !(rds->corrected & 0x04)) {
       rds_add_af(rds, g[5]);
       rds_add_af(rds, g[4]);
     }
@@ -719,60 +762,44 @@ static void rds_group(rds_state* rds)
   case 2: {                                   /* 2A/2B: radio text */
     int ab = (g[2] >> 4) & 1;
     int per = version_b ? 2 : 4;              /* characters per segment */
-    unsigned char c[4];
-    int n;
 
-    if (ab != rds->rt_ab) {                   /* new text: start again */
+    if (ab != rds->rt_ab) {
+      /* new text: start again -- on a flag from a corrected block B,
+       * only once it came twice */
+      if ((rds->corrected & 0x02) && ab != rds->ab_cand) {
+        rds->ab_cand = ab;
+        break;
+      }
       rds->rt_ab = ab;
-      memset(rds->rt, ' ', sizeof(rds->rt));
-      rds->rt_have = 0;
-      rds->rt_len = -1;
+      rds->ab_cand = -1;
+      rds_text_init(&rds->rt, RDS_RT_MAX_LENGTH / (4 / per), per, 1);
+    } else if (per != rds->rt.per) {
+      rds_text_init(&rds->rt, RDS_RT_MAX_LENGTH / (4 / per), per, 1);
     }
-    seg = g[2] & 0x0f;
-    if (version_b) {
-      c[0] = g[7]; c[1] = g[6];
-    } else {
-      c[0] = g[5]; c[1] = g[4]; c[2] = g[7]; c[3] = g[6];
-    }
-    for (i = 0; i < per; i++) {
-      n = seg * per + i;
-      if (n >= RDS_RT_MAX_LENGTH)
-        break;
-      if (c[i] == 0x0d) {                     /* end of the text */
-        rds->rt_len = n;
-        break;
-      }
-      rds->rt[n] = rds_char(c[i]);
-    }
-    rds->rt_have |= 1u << seg;
-
-    /* complete: every segment up to the end, or all of them */
-    {
-      int len = rds->rt_len >= 0 ? rds->rt_len : 16 * per;
-      int segs = (len + per - 1) / per;
-      unsigned int need = segs >= 32 ? 0xffffffffu : ((1u << segs) - 1);
-
-      if (len > RDS_RT_MAX_LENGTH)
-        len = RDS_RT_MAX_LENGTH;
-      if ((rds->rt_have & need) == need) {
-        char text[RDS_RT_MAX_LENGTH + 1];
-
-        memcpy(text, rds->rt, len);
-        while (len > 0 && text[len - 1] == ' ')
-          len--;
-        text[len] = '\0';
-        if (len > 0 && strcmp(text, rds->rt_out) != 0) {
-          strcpy(rds->rt_out, text);
-          rds->changed |= FMRADIO_RDS_RT_CHANGED;
-        }
-      }
-    }
+    if (rds_text_put(&rds->rt, g[2] & 0x0f, version_b ? c + 2 : c, suspect))
+      rds_text_out(&rds->rt, RDS_CHARSET_BASIC, rds->rt_out,
+                   sizeof(rds->rt_out));
     break;
   }
+
+  case 3:                                     /* 3A: an open data application */
+    if (!version_b && !suspect && ((g[7] << 8) | g[6]) == RDS_ODA_ERT) {
+      rds->ert_group = g[2] & 0x1f;
+      rds->ert_charset = (g[4] & 0x01) ? RDS_CHARSET_UTF8 : RDS_CHARSET_UCS2;
+    }
+    break;
+
+  case 15:                                    /* 15A: Long PS, UTF-8 */
+    if (!version_b &&
+        rds_text_put(&rds->long_ps, g[2] & 0x07, c, suspect))
+      rds_text_out(&rds->long_ps, RDS_CHARSET_UTF8, rds->long_ps_out,
+                   sizeof(rds->long_ps_out));
+    break;
 
   default:
     break;
   }
+  rds_publish(rds);
 }
 
 /* One block from the driver: [lsb, msb, block number and flags] */
@@ -799,6 +826,10 @@ static void rds_block(rds_state* rds, unsigned char lsb, unsigned char msb,
     }
   }
 
+  if (block == 0)
+    rds->corrected = 0;
+  if (info & 0x40)                            /* the chip corrected it */
+    rds->corrected |= 1u << block;
   rds->group[block * 2] = lsb;
   rds->group[block * 2 + 1] = msb;
   rds->next_block = block + 1;
@@ -858,8 +889,8 @@ int v4l2_get_rds(void * * session_data, struct fmradio_rds_bundle_t * fmradio_rd
   fmradio_rds_bundle->ms = rds->ms;
   fmradio_rds_bundle->num_afs = rds->num_afs;
   memcpy(fmradio_rds_bundle->af, rds->af, sizeof(rds->af));
-  strcpy(fmradio_rds_bundle->psn, rds->ps_out);
-  strcpy(fmradio_rds_bundle->rt, rds->rt_out);
+  strcpy(fmradio_rds_bundle->psn, rds->psn_pub);
+  strcpy(fmradio_rds_bundle->rt, rds->rt_pub);
 
   changed = rds->changed;
   rds->changed = 0;

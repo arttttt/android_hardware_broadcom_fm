@@ -822,7 +822,7 @@ jint setRds(JNIEnv * __attribute__((unused)) env, jobject __attribute__((unused)
 
 static jbyteArray rdsText(JNIEnv *env, const char *text, size_t max)
 {
-    char copy[RDS_RT_MAX_LENGTH + 1];
+    char copy[RDS_RT_UTF8_SIZE];
     size_t len;
     jbyteArray array;
 
@@ -842,10 +842,9 @@ static jbyteArray rdsText(JNIEnv *env, const char *text, size_t max)
 /* The radio text */
 jbyteArray getLrText(JNIEnv *env, jobject __attribute__((unused)) thiz)
 {
-    return rdsText(env, rdsLatest.rt, RDS_RT_MAX_LENGTH);
+    return rdsText(env, rdsLatest.rt, RDS_RT_UTF8_SIZE - 1);
 }
 
-/* The station name */
 /* The station's PI code, 0 until known */
 jint getPi(JNIEnv * __attribute__((unused)) env, jobject __attribute__((unused)) thiz)
 {
@@ -857,9 +856,10 @@ jint getPi(JNIEnv * __attribute__((unused)) env, jobject __attribute__((unused))
     return pi;
 }
 
+/* The station name */
 jbyteArray getPs(JNIEnv *env, jobject __attribute__((unused)) thiz)
 {
-    return rdsText(env, rdsLatest.psn, RDS_PSN_MAX_LENGTH);
+    return rdsText(env, rdsLatest.psn, RDS_PSN_UTF8_SIZE - 1);
 }
 
 /*
