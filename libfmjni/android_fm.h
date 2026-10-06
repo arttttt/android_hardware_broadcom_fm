@@ -69,6 +69,9 @@ union fmradio_extra_data_t {
 #define FMRADIO_RDS_PS_CHANGED  0x01
 #define FMRADIO_RDS_RT_CHANGED  0x02
 #define FMRADIO_RDS_AF_CHANGED  0x04
+/* the tuner is on another frequency than it was set to: the driver's AF
+ * switching moved it, to the same station */
+#define FMRADIO_RDS_FREQ_CHANGED 0x08
 
 struct fmradio_rds_bundle_t {
     unsigned short pi;

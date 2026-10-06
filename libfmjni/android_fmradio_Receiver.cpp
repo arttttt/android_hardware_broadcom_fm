@@ -754,9 +754,13 @@ jint setMute(JNIEnv *env, jobject thiz, jboolean mute)
 /* FmService's RDS event bits */
 #define RDS_EVENT_PROGRAMNAME     0x0008
 #define RDS_EVENT_LAST_RADIOTEXT  0x0040
+#define RDS_EVENT_AF              0x0080
 
 static struct fmradio_rds_bundle_t rdsLatest;
 static bool rdsOn = true;
+/* where the driver's AF switching moved the tuner, in the app's 100 kHz
+ * units, until activeAf hands it over; -1 for nowhere */
+static int rdsAfStation = -1;
 
 jint isRdsSupport(JNIEnv *env, jobject thiz)
 {
@@ -787,6 +791,16 @@ jshort readRds(JNIEnv * __attribute__((unused)) env, jobject __attribute__((unus
             events |= RDS_EVENT_PROGRAMNAME;
         if (changed & FMRADIO_RDS_RT_CHANGED)
             events |= RDS_EVENT_LAST_RADIOTEXT;
+        if ((changed & FMRADIO_RDS_FREQ_CHANGED) &&
+                fmReceiverSession.vendorMethods_p->get_frequency != NULL) {
+            int khz = fmReceiverSession.vendorMethods_p->get_frequency(
+                    &fmReceiverSession.vendorData_p);
+
+            if (khz > 0) {
+                rdsAfStation = khz / 100;
+                events |= RDS_EVENT_AF;
+            }
+        }
     }
     pthread_mutex_unlock(fmReceiverSession.dataMutex_p);
 
@@ -835,13 +849,19 @@ jbyteArray getPs(JNIEnv *env, jobject __attribute__((unused)) thiz)
 }
 
 /*
- * The alternative frequency to switch to. The AF list is gathered, but no
- * switching is done: readRds never reports an AF event, and this answers
- * "none" (-1) if called anyway. Registered so a call cannot fail to link.
+ * The frequency the driver's AF switching moved the tuner to, in 100 kHz
+ * units, once, after readRds reported RDS_EVENT_AF; -1 if none. The switch
+ * is done: the app only has to know it.
  */
 jshort activeAf(JNIEnv * __attribute__((unused)) env, jobject __attribute__((unused)) thiz)
 {
-    return -1;
+    int station;
+
+    pthread_mutex_lock(fmReceiverSession.dataMutex_p);
+    station = rdsAfStation;
+    rdsAfStation = -1;
+    pthread_mutex_unlock(fmReceiverSession.dataMutex_p);
+    return station;
 }
 
 jshortArray autoScan(JNIEnv *env, jobject thiz)

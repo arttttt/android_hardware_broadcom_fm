@@ -294,10 +294,12 @@ int v4l2_set_frequency(void** session_data, int frequency){
   ALOGI("%s:\n", __FUNCTION__);
   session = get_session_data(session_data);
 
-  session->freq = get_proprietary_freq( frequency, session->fact);
-  ret= set_freq(session->fd,  session->freq);
-  if (ret < 0)
+  /* session->freq stays the tuner's own until the tune is through: the
+   * RDS poll takes any other frequency the driver reports for an AF jump */
+  ret = get_proprietary_freq(frequency, session->fact);
+  if (set_freq(session->fd, ret) < 0)
       return -1;
+  session->freq = ret;
 
   rds_reset(session);
   return frequency;
@@ -379,6 +381,21 @@ static int no_hw_seek(int err)
  * over the threshold. Once round at most, and it stops when asked. Returns
  * the frequency found, or -1 with the tuner back where it was.
  */
+/*
+ * Back to the frequency the scan started from. If the tune fails, the
+ * tuner is wherever the scan left it, and session->freq follows it: the
+ * RDS poll would take the difference for an AF jump.
+ */
+static void restore_freq(fm_v4l2_data* session)
+{
+  int freq;
+
+  set_freq(session->fd, session->freq);
+  freq = get_freq(session->fd);
+  if (freq >= 0)
+      session->freq = freq;
+}
+
 static int sw_scan(fm_v4l2_data* session, int upward)
 {
   int increment = upward ? session->grid : -session->grid;
@@ -410,7 +427,7 @@ static int sw_scan(fm_v4l2_data* session, int upward)
       }
   }
 
-  set_freq(session->fd, session->freq);
+  restore_freq(session);
   return -1;
 }
 
@@ -442,14 +459,14 @@ int v4l2_scan (void ** session_data, enum fmradio_seek_direction_t direction){
           session->freq = freq;
           ret = get_standard_freq(freq, session->fact);
       } else {
-          set_freq(session->fd, session->freq);
+          restore_freq(session);
           ret = -1;
       }
   } else if (no_hw_seek(ret)) {
       ret = sw_scan(session, upward);
   } else {
       ALOGI("hardware seek: %s\n", ret == -ENODATA ? "no station" : strerror(-ret));
-      set_freq(session->fd, session->freq);
+      restore_freq(session);
       ret = -1;
   }
 
@@ -580,7 +597,7 @@ found:
 out:
   free(temp_freq);
   free(temp_strenght);
-  set_freq(session->fd, session->freq);
+  restore_freq(session);
   session->scan_band_run = SCAN_RUN;
 
   return founded;
@@ -795,7 +812,18 @@ int v4l2_get_rds(void * * session_data, struct fmradio_rds_bundle_t * fmradio_rd
   fm_v4l2_data * session = get_session_data(session_data);
   rds_state* rds = &session->rds;
   unsigned char buf[BUFFER_RDS_SIZE];
-  int bytesNum, i, changed;
+  int bytesNum, i, changed, freq;
+  int moved = 0;
+
+  /* The driver switches to a station's alternative frequency by itself:
+   * the tuner then is not where it was set. What RDS was gathered stays
+   * the station's, but starts over with the new frequency's. */
+  freq = get_freq(session->fd);
+  if (freq >= 0 && freq != session->freq) {
+    session->freq = freq;
+    rds_reset(session);
+    moved = 1;
+  }
 
   for (;;) {
     bytesNum = read(session->fd, buf, sizeof(buf) - sizeof(buf) % 3);
@@ -828,6 +856,8 @@ int v4l2_get_rds(void * * session_data, struct fmradio_rds_bundle_t * fmradio_rd
 
   changed = rds->changed;
   rds->changed = 0;
+  if (moved)
+    changed |= FMRADIO_RDS_FREQ_CHANGED;
   return changed;
 }
 
